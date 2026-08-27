@@ -246,7 +246,18 @@ def main() -> None:
             pass
     budget = Budget_Accountant(config.budget)
     event_log = Event_Log(sink=DynamoEventSink(store, serializer), start_seq=0)
-    runtime = BedrockAgentRuntimeClient(runtime_arn, region, budget) if runtime_arn else None
+    # The in-process harness fan-out (synchronous AgentCore calls) does not scale
+    # to hundreds of agents: a slow/hanging invocation blocks the tick loop and
+    # freezes the world clock. Until decision fan-out is moved off the hot path
+    # (SQS worker fleet), the harness is OFF by default; the deterministic
+    # heuristic engine drives all behaviour (movement, socialising, conversations).
+    # Set HARNESS_ENABLED=1 to re-enable the in-process harness (small worlds).
+    harness_enabled = os.environ.get("HARNESS_ENABLED", "0") == "1"
+    runtime = (BedrockAgentRuntimeClient(runtime_arn, region, budget)
+               if (runtime_arn and harness_enabled) else None)
+    if not harness_enabled:
+        print("[engine] harness disabled (HARNESS_ENABLED != 1); "
+              "running on deterministic heuristics", flush=True)
 
     detention = world.locations.get(config.detentionFacilityId) if config.detentionFacilityId else None
     law = None

@@ -280,6 +280,10 @@ class AgentState:
     # event (festival/market). Both round-trip through persistence.
     avoidedLocations: Dict[str, str] = field(default_factory=dict)
     attractorLocation: Optional[Dict[str, Any]] = None
+    # Transient live-conversation marker for the current tick:
+    # {"participants": [ids], "locationId": str}. Surfaced by the API /state so
+    # the SPA renders a conversation indicator; cleared each tick when not in one.
+    conversation: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -304,6 +308,8 @@ class AgentState:
             "avoidedLocations": dict(self.avoidedLocations),
             "attractorLocation": (dict(self.attractorLocation)
                                   if self.attractorLocation else None),
+            "conversation": (dict(self.conversation)
+                             if self.conversation else None),
         }
 
     @classmethod
@@ -331,6 +337,7 @@ class AgentState:
                               (d.get("avoidedLocations") or {}).items()},
             attractorLocation=(dict(d["attractorLocation"])
                                if d.get("attractorLocation") else None),
+            conversation=(dict(d["conversation"]) if d.get("conversation") else None),
         )
 
 

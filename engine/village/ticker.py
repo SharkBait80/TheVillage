@@ -42,8 +42,14 @@ from .social import Social_Engine
 DECISION_MAX_WORKERS = 8
 # Best-effort ceiling on how long we wait for the whole decision fan-out in a
 # single tick before proceeding (real per-call timeouts live in the boto3
-# client config on the engine side).
-DECISION_BATCH_DEADLINE_SEC = 45.0
+# client config on the engine side). Kept short so a slow harness cannot stall
+# the world clock — undecided agents fall back to the local heuristic.
+DECISION_BATCH_DEADLINE_SEC = 8.0
+# Hard cap on how many agents call the network-bound harness in a single tick.
+# At large populations (hundreds of agents) an unbounded fan-out cannot finish
+# within the tick budget and would freeze the clock; the remainder are decided
+# instantly by the deterministic heuristic engine.
+DECISION_MAX_PER_TICK = 8
 # How many nearest reachable locations to surface to the harness (DESIGN §6).
 REACHABLE_LIMIT = 20
 # How many short-term memory lines to mirror into a decision/utterance request.
@@ -201,12 +207,18 @@ class Ticker:
         self._process_injected_events(sim_iso)
 
         # 3a. day-plan on wake / new day (emits a `planning` thought event).
+        # Planning calls the harness synchronously; cap how many run per tick so
+        # a wake-time surge across hundreds of agents cannot stall the clock.
+        # Un-planned agents simply plan on a later tick (or rely on heuristics).
         sim_date = sim_iso[:10]
+        planned_this_tick = 0
         for agent in self.world.agents.values():
             if self._should_plan(agent, sim_iso, sim_date):
-                if self.budget.can_start_decision():
+                if planned_this_tick < DECISION_MAX_PER_TICK and self.budget.can_start_decision():
                     self._trigger_plan(agent, sim_iso)
-                self._planned_on[agent.id] = sim_date
+                    planned_this_tick += 1
+                    self._planned_on[agent.id] = sim_date
+                # else: leave unmarked so it gets a chance on a subsequent tick.
 
         # 3b. fan out decision cycles for idle agents with bounded concurrency.
         # Building perception + calling the harness is network-I/O bound, so we
@@ -215,7 +227,16 @@ class Ticker:
         idle_agents = [a for a in self.world.agents.values()
                        if a.state.currentAction is None]
         pending: List[Agent] = []
+        overflow: List[Agent] = []
         for agent in idle_agents:
+            # Cap how many agents call the (network-bound) harness per tick. At
+            # large populations, fanning out hundreds of harness calls per tick
+            # cannot complete within the tick budget and would stall the clock;
+            # the overflow is decided instantly by the deterministic heuristic
+            # engine so the world stays live and conversations still form.
+            if len(pending) >= DECISION_MAX_PER_TICK:
+                overflow.append(agent)
+                continue
             if self.budget.can_start_decision():
                 pending.append(agent)
             else:
@@ -227,6 +248,10 @@ class Ticker:
                     detail={"kind": "throttled"})
         for agent, resp in self._fan_out_decisions(pending, sim_iso):
             self._apply_decision(agent, resp, sim_iso)
+            decisions += 1
+        # Overflow agents: instant local heuristic decision (no harness call).
+        for agent in overflow:
+            self._apply_heuristic_decision(agent, sim_iso)
             decisions += 1
 
         # 4. day rollover economy (Req 9.7)
@@ -244,10 +269,14 @@ class Ticker:
             # End-of-day reflection: durable "thoughts" drawn from the day's
             # short-term memory. Emitted as `memory` category events so the SPA
             # and decision-trail surface each agent's reasoning (Req 7 / 14).
+            # Bounded per tick: reflection is a synchronous harness call, so an
+            # all-agent burst at the day boundary would otherwise stall the clock.
+            reflected_this_tick = 0
             for agent in self.world.agents.values():
-                if self.budget.can_start_decision():
+                if reflected_this_tick < DECISION_MAX_PER_TICK and self.budget.can_start_decision():
                     self._trigger_reflect(agent, sim_iso)
-                self._reflected_on[agent.id] = sim_iso[:10]
+                    reflected_this_tick += 1
+                    self._reflected_on[agent.id] = sim_iso[:10]
 
         # 5. law: release + suspect auto-clear
         if self.law is not None:
@@ -668,8 +697,16 @@ class Ticker:
         requests = {a.id: self._build_decision_request(a, sim_iso) for a in agents}
         by_id = {a.id: a for a in agents}
         results: Dict[str, Optional[Dict[str, Any]]] = {}
-        with concurrent.futures.ThreadPoolExecutor(
-                max_workers=DECISION_MAX_WORKERS) as ex:
+        # NOTE: we deliberately do NOT use a `with ThreadPoolExecutor(...)` block.
+        # Its __exit__ calls shutdown(wait=True), which blocks until EVERY
+        # submitted harness call returns — so a slow/unreachable AgentCore
+        # Runtime (each call can take the full boto3 read-timeout) would wedge
+        # the entire engine tick loop for minutes. Instead we honour the batch
+        # deadline and then shut the pool down WITHOUT waiting, cancelling any
+        # queued futures so the tick proceeds with heuristic fallbacks for
+        # agents whose decision didn't complete in time.
+        ex = concurrent.futures.ThreadPoolExecutor(max_workers=DECISION_MAX_WORKERS)
+        try:
             fut_to_id = {
                 ex.submit(self.runtime.decision, requests[a.id]): a.id
                 for a in agents
@@ -686,6 +723,10 @@ class Ticker:
             except concurrent.futures.TimeoutError:
                 for fut, aid in fut_to_id.items():
                     results.setdefault(aid, None)
+        finally:
+            # Non-blocking: cancel queued futures; abandon in-flight ones (their
+            # daemon threads exit when the call finally returns/times out).
+            ex.shutdown(wait=False, cancel_futures=True)
         # Deterministic apply order (by agent id) regardless of completion order.
         for aid in sorted(by_id):
             yield by_id[aid], results.get(aid)
@@ -950,6 +991,13 @@ class Ticker:
         """
         use_local = self.runtime is None
 
+        # Clear last tick's live-conversation markers; we re-stamp the ones that
+        # form this tick so the SPA's /state renders current conversation
+        # indicators (it derives them from each agent's state.conversation).
+        for agent in self.world.agents.values():
+            if getattr(agent.state, "conversation", None):
+                agent.state.conversation = None
+
         # Index agents by their current location for co-location checks.
         by_location: Dict[str, List[Agent]] = {}
         for agent in self.world.agents.values():
@@ -1072,6 +1120,15 @@ class Ticker:
                         "utteranceCount": outcome.utterance_count,
                     })
                 started += 1
+                # Stamp a live conversation marker on each participant so the
+                # SPA's /state surfaces a conversation indicator for this tick.
+                for pid in convo.participants:
+                    p = self.world.agents.get(pid)
+                    if p is not None:
+                        p.state.conversation = {
+                            "participants": list(convo.participants),
+                            "locationId": loc,
+                        }
                 # Credit social-need recovery once per conversation for each
                 # participant (Req 5.4). Idempotent via creditedConversations.
                 # A conversation only forms off a socialise action, so use that
