@@ -13,7 +13,7 @@ from .budget import BudgetConfigError, validate_budget
 from .models import Config, SimStatus
 
 POPULATION_MIN = 5
-POPULATION_MAX = 100
+POPULATION_MAX = 2000
 POPULATION_DEFAULT = 25
 
 

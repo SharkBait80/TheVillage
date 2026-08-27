@@ -24,9 +24,16 @@ def test_population_out_of_range_rejected():
     with pytest.raises(ConfigValidationError):
         validate_population(4)
     with pytest.raises(ConfigValidationError):
-        validate_population(101)
+        validate_population(2001)
     with pytest.raises(ConfigValidationError):
         validate_population(True)
+
+
+def test_population_large_scale_accepted():
+    # The world scales to hundreds of agents (500+); the controller must
+    # accept large populations so the engine can start.
+    assert validate_population(500) == 500
+    assert validate_population(2000) == 2000
 
 
 def test_validate_config_ok():
