@@ -257,3 +257,97 @@ def test_conversation_is_run_and_persisted_with_utterances():
     first = detail["utterances"][0]
     assert "speaker" in first and "text" in first
     assert runtime.utterance_calls >= 2
+
+
+# ---------------------------------------------------------------------------
+# New: planning + reflection thought logging, and perception enrichment
+# ---------------------------------------------------------------------------
+
+class PlanningRuntime:
+    """Returns a concrete day-plan, reflections, and travel decisions."""
+    def __init__(self):
+        self.seen_requests = []
+
+    def decision(self, request):
+        self.seen_requests.append(request)
+        # choose to travel to the first reachable location if any
+        reachable = request.get("reachable") or []
+        if reachable:
+            return {"action": {"type": "travel", "targetType": "location",
+                               "targetId": reachable[0]["id"],
+                               "expectedDurationMin": 5},
+                    "reasoning": "heading out",
+                    "tokenUsage": {"modelId": OPUS, "purpose": "decision_cycle",
+                                   "inputTokens": 100, "outputTokens": 20}}
+        return {"action": {"type": "idle", "targetType": "location",
+                           "targetId": request["state"]["presentLocationId"],
+                           "expectedDurationMin": 5}}
+
+    def plan(self, request):
+        return {"plan": [{"type": "work", "targetType": "location", "targetId": "loc_home"},
+                         {"type": "eat", "targetType": "location", "targetId": "loc_home"},
+                         {"type": "sleep", "targetType": "location", "targetId": "loc_home"}],
+                "reasoning": "a productive day"}
+
+    def reflect(self, request):
+        return {"reflections": [{"text": "I made a new friend today",
+                                 "sourceMemoryIds": [1]}]}
+
+    def utterance(self, request):
+        return {"utterance": "hi"}
+
+
+def test_planning_emits_planning_event_and_perception_has_reachable():
+    world = make_world()
+    # add a second reachable location so travel is possible
+    world.locations["loc_cafe"] = Location(
+        id="loc_cafe", name="Cafe", category=LocationCategory.FOOD,
+        lat=-37.815, lon=144.955, capacity=10,
+        hours=[OpeningHours("00:00", "23:59")] * 7, price=8.5)
+    fake = FakeClock()
+    clock = Simulation_Clock(
+        localize(datetime.fromisoformat("2026-03-02T08:00:00")),
+        acceleration_factor=60, real_clock=fake)
+    controller = Simulation_Controller(world.config)
+    controller.start()
+    budget = Budget_Accountant(world.config.budget)
+    log = Event_Log()
+    runtime = PlanningRuntime()
+    ticker = Ticker(world=world, clock=clock, controller=controller,
+                    runtime=runtime, event_log=log, budget=budget)
+    fake.tick(1.0)
+    ticker.advance_once()
+
+    # a planning event was logged (thought process)
+    plans = log.query(category="planning").entries
+    assert plans, "expected a planning event"
+    assert plans[-1].detail["kind"] == "day-plan"
+    # perception passed to the decision included reachable locations + colocated
+    assert runtime.seen_requests, "expected a decision request"
+    req = runtime.seen_requests[-1]
+    assert "reachable" in req and len(req["reachable"]) >= 1
+    assert "coLocated" in req
+    assert "perceptionFlags" in req
+    # token usage recorded a model invocation event
+    models = log.query(category="model").entries
+    assert any(m.detail.get("kind") == "invocation" for m in models)
+
+
+def test_reflection_emits_memory_events_on_day_rollover():
+    world = make_world()
+    fake = FakeClock()
+    clock = Simulation_Clock(
+        localize(datetime.fromisoformat("2026-03-02T23:59:00")),
+        acceleration_factor=60, real_clock=fake)
+    controller = Simulation_Controller(world.config)
+    controller.start()
+    budget = Budget_Accountant(world.config.budget)
+    log = Event_Log()
+    ticker = Ticker(world=world, clock=clock, controller=controller,
+                    runtime=PlanningRuntime(), event_log=log, budget=budget)
+    for _ in range(3):  # cross midnight
+        fake.tick(1.0)
+        ticker.advance_once()
+    reflections = log.query(category="memory").entries
+    assert reflections, "expected a reflection (memory) event on rollover"
+    assert reflections[-1].detail["kind"] == "reflection"

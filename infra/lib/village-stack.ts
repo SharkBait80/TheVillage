@@ -400,8 +400,13 @@ export class VillageStack extends cdk.Stack {
     });
 
     const engineTaskDef = new ecs.FargateTaskDefinition(this, 'EngineTaskDef', {
-      cpu: 512,
-      memoryLimitMiB: 1024,
+      // Vertically scaled from 0.5 vCPU/1GB to 1 vCPU/2GB. The engine fans out
+      // per-agent harness calls with bounded concurrency (<=8 threads) each
+      // tick; the extra CPU/memory gives headroom for 25 agents' concurrent
+      // network I/O, JSON (de)serialisation, and route computation without the
+      // tick loop falling behind real time. (Valid ARM64 Fargate pair.)
+      cpu: 1024,
+      memoryLimitMiB: 2048,
       taskRole: engineTaskRole,
       runtimePlatform: {
         cpuArchitecture: ecs.CpuArchitecture.ARM64,

@@ -48,7 +48,18 @@ class BedrockAgentRuntimeClient:
     def __init__(self, runtime_arn: str, region: str,
                  budget: Optional[Budget_Accountant] = None):
         import boto3
-        self._client = boto3.client("bedrock-agentcore", region_name=region)
+        from botocore.config import Config as BotoConfig
+        # Per-call network timeouts live on the client (not the executor) so a
+        # hung harness invocation aborts the socket and frees the worker thread
+        # rather than pinning one of the bounded decision-pool slots. Modest
+        # adaptive retries smooth over transient AgentCore throttling.
+        cfg = BotoConfig(
+            connect_timeout=5,
+            read_timeout=40,
+            retries={"max_attempts": 2, "mode": "adaptive"},
+        )
+        self._client = boto3.client("bedrock-agentcore", region_name=region,
+                                    config=cfg)
         self._arn = runtime_arn
         self._budget = budget
 

@@ -286,6 +286,23 @@ def _state_block(state: Dict[str, Any]) -> str:
     )
 
 
+def _dayplan_block(state: Dict[str, Any]) -> str:
+    """Render the agent's intended day plan so decisions follow through on it."""
+    plan = state.get("dayPlan") or []
+    if not plan:
+        return "(no plan yet — act sensibly for the time of day)"
+    lines = []
+    for i, step in enumerate(plan[:12]):
+        if isinstance(step, dict):
+            lines.append(
+                f"{i+1}. {step.get('type','?')} -> {step.get('targetType','location')}:"
+                f"{step.get('targetId','?')}"
+            )
+        else:
+            lines.append(f"{i+1}. {step}")
+    return "\n".join(lines)
+
+
 def _reachable_block(reachable: List[Dict[str, Any]]) -> str:
     lines = []
     for loc in (reachable or [])[:20]:
@@ -349,21 +366,30 @@ def build_decision_prompt(payload: Dict[str, Any]) -> Tuple[str, str]:
     system = (
         "You are a single inhabitant of a simulated Melbourne (the 'Agent Village'). "
         "You decide your own next action from what you perceive and remember. "
+        "You are a living person with a life to get on with: follow your day plan, "
+        "pursue your job, feed and enjoy yourself, and seek out others. Prefer a "
+        "concrete, purposeful action (travel, work, eat, shop, leisure, socialise) "
+        "over idling. Only choose \"idle\" when nothing else makes sense (e.g. it is "
+        "the middle of the night and you are not sleeping). If it is night and your "
+        "energy is not high, choose \"sleep\". "
         "You MUST reply with ONLY a single JSON object and no other text, in the form:\n"
         '{"action":{"type":"<one of sleep|eat|work|travel|socialise|shop|leisure|'
         'commit_crime|idle>","targetType":"<location|agent>","targetId":"<id>",'
         '"expectedDurationMin":<integer 1-600>,"crimeType":"<theft|burglary|vandalism|fraud>"},'
         '"reasoning":"<one short sentence, <=280 chars, explaining WHY you chose this>"}\n'
         "Rules: targetId MUST be your current location, one of the reachable locations, "
-        "or one of the co-located agents. Only include \"crimeType\" when type is "
-        "\"commit_crime\". If detained you may only sleep/eat/socialise/idle. "
-        "Choose an action that best serves your needs, finances, job, and relationships."
+        "or one of the co-located agents. To socialise, set targetType=agent and "
+        "targetId to a co-located agent id. To work/eat/shop/leisure, travel to a "
+        "suitable location first if you are not already there. Only include "
+        "\"crimeType\" when type is \"commit_crime\". If detained you may only "
+        "sleep/eat/socialise/idle. Advance your DAY PLAN where it is sensible."
     )
 
     user = (
         f"Current simulated time: {payload.get('simTime','?')}\n\n"
         f"== YOUR PERSONA ==\n{_persona_block(persona)}\n\n"
         f"== YOUR STATE ==\n{_state_block(state)}\n\n"
+        f"== YOUR DAY PLAN ==\n{_dayplan_block(state)}\n\n"
         f"== CURRENT LOCATION ==\n"
         f"id={cur.get('id')} name=\"{cur.get('name')}\" category={cur.get('category')}\n\n"
         f"== CO-LOCATED AGENTS (targetable for socialise/commit_crime) ==\n"

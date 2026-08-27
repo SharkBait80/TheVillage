@@ -11,6 +11,7 @@ loop is unit-testable with a fake.
 """
 from __future__ import annotations
 
+import concurrent.futures
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Protocol
@@ -22,12 +23,27 @@ from .crime import Crime_Engine
 from .economy import Economy_Engine
 from .eventlog import Event_Log
 from .law import Law_Enforcement_Engine
-from .models import (Action, ActionType, Agent, Config, Job, LegalStatus,
-                     Location, SimStatus)
-from .movement import Movement_Engine
+from .models import (Action, ActionType, Agent, Config, EmploymentStatus, Job,
+                     LegalStatus, Location, SimStatus, TargetType)
+from .movement import Movement_Engine, haversine_m
 from .needs import (apply_decay_tick, apply_energy_recovery_tick,
                     update_critical_flags)
 from .social import Social_Engine
+
+# Bounded concurrency for per-agent harness calls within a tick. Kept small to
+# respect the invocation budget and the AgentCore Runtime; network I/O bound so
+# a modest pool keeps 25 agents responsive without saturating the engine task.
+DECISION_MAX_WORKERS = 8
+# Best-effort ceiling on how long we wait for the whole decision fan-out in a
+# single tick before proceeding (real per-call timeouts live in the boto3
+# client config on the engine side).
+DECISION_BATCH_DEADLINE_SEC = 45.0
+# How many nearest reachable locations to surface to the harness (DESIGN §6).
+REACHABLE_LIMIT = 20
+# How many short-term memory lines to mirror into a decision/utterance request.
+STM_LIMIT = 30
+# Needs at/below this fraction are surfaced as "critical" perception hints.
+CRITICAL_NEED_THRESHOLD = 25
 
 
 # --------------------------------------------------------------------------
@@ -116,6 +132,14 @@ class Ticker:
         self.crime = crime or Crime_Engine()
         self.law = law
         self._persist = persist or (lambda a: None)
+        # Short-term memory mirror: agentId -> recent memory lines (strings).
+        # Gives the harness continuity of thought across ticks even when
+        # AgentCore Memory is unavailable/degraded. Bounded per agent.
+        self._stm: Dict[str, List[str]] = {}
+        # Track which agents have already produced a day-plan / reflection for
+        # the current sim date, so we emit them once per day (thought logging).
+        self._planned_on: Dict[str, str] = {}
+        self._reflected_on: Dict[str, str] = {}
 
     # -- one loop iteration -------------------------------------------------
     def advance_once(self, tick_processing_seconds: float = 0.0) -> Optional[TickReport]:
@@ -157,18 +181,34 @@ class Ticker:
         for agent in self.world.agents.values():
             self._progress_action(agent, tick)
 
+        # 3a. day-plan on wake / new day (emits a `planning` thought event).
+        sim_date = sim_iso[:10]
         for agent in self.world.agents.values():
-            if agent.state.currentAction is None:
+            if self._should_plan(agent, sim_iso, sim_date):
                 if self.budget.can_start_decision():
-                    self._trigger_decision(agent, sim_iso)
-                    decisions += 1
-                else:
-                    throttled += 1
-                    self.event_log.append(
-                        sim_iso, "model",
-                        f"decision throttled for {agent.id}",
-                        agents=[agent.id],
-                        detail={"kind": "throttled"})
+                    self._trigger_plan(agent, sim_iso)
+                self._planned_on[agent.id] = sim_date
+
+        # 3b. fan out decision cycles for idle agents with bounded concurrency.
+        # Building perception + calling the harness is network-I/O bound, so we
+        # parallelise the calls (<=8 in flight) and then apply results on the
+        # main thread to keep the rest of the tick deterministic.
+        idle_agents = [a for a in self.world.agents.values()
+                       if a.state.currentAction is None]
+        pending: List[Agent] = []
+        for agent in idle_agents:
+            if self.budget.can_start_decision():
+                pending.append(agent)
+            else:
+                throttled += 1
+                self.event_log.append(
+                    sim_iso, "model",
+                    f"decision throttled for {agent.id}",
+                    agents=[agent.id],
+                    detail={"kind": "throttled"})
+        for agent, resp in self._fan_out_decisions(pending, sim_iso):
+            self._apply_decision(agent, resp, sim_iso)
+            decisions += 1
 
         # 4. day rollover economy (Req 9.7)
         rolled = False
@@ -182,6 +222,13 @@ class Ticker:
                         f"unpaid living cost {unpaid:.2f} for {agent.id}",
                         agents=[agent.id],
                         detail={"kind": "unpaid-living-cost", "unpaid": unpaid})
+            # End-of-day reflection: durable "thoughts" drawn from the day's
+            # short-term memory. Emitted as `memory` category events so the SPA
+            # and decision-trail surface each agent's reasoning (Req 7 / 14).
+            for agent in self.world.agents.values():
+                if self.budget.can_start_decision():
+                    self._trigger_reflect(agent, sim_iso)
+                self._reflected_on[agent.id] = sim_iso[:10]
 
         # 5. law: release + suspect auto-clear
         if self.law is not None:
@@ -247,14 +294,172 @@ class Ticker:
                 agent.state.currentAction = None
 
     def _trigger_decision(self, agent: Agent, sim_iso: str) -> None:
-        request = {
+        """Build full perception, call the harness, and apply the result.
+
+        Retained as a single-agent convenience (used by tests); the tick loop
+        uses the parallel fan-out path below.
+        """
+        resp = self._call_decision(agent, sim_iso)
+        self._apply_decision(agent, resp, sim_iso)
+
+    # -- perception --------------------------------------------------------
+    def _reachable_for(self, agent: Agent) -> List[Dict[str, Any]]:
+        """Nearest REACHABLE_LIMIT locations with capacity + travel estimate.
+
+        Ordered by straight-line travel time so the harness can pick concrete,
+        reachable targets (enabling travel/work/eat/shop/leisure instead of
+        idling for lack of options — DESIGN §6).
+        """
+        st = agent.state
+        occupancy: Dict[str, int] = {}
+        for other in self.world.agents.values():
+            pid = other.state.presentLocationId
+            if pid:
+                occupancy[pid] = occupancy.get(pid, 0) + 1
+        scored: List[tuple] = []
+        for loc in self.world.locations.values():
+            dist_km = haversine_m(st.lat, st.lon, loc.lat, loc.lon) / 1000.0
+            # rough travel minutes at walking pace as an ordering key/estimate.
+            travel_min = max(1, int(round(dist_km / 5.0 * 60.0)))
+            remaining = max(0, loc.capacity - occupancy.get(loc.id, 0))
+            scored.append((travel_min, loc, remaining))
+        scored.sort(key=lambda t: t[0])
+        out: List[Dict[str, Any]] = []
+        for travel_min, loc, remaining in scored[:REACHABLE_LIMIT]:
+            out.append({
+                "id": loc.id, "name": loc.name, "category": loc.category.value,
+                "remainingCapacity": remaining, "travelMin": travel_min,
+                "price": loc.price,
+            })
+        return out
+
+    def _colocated_for(self, agent: Agent) -> List[Dict[str, Any]]:
+        """Other agents at the same present location (targetable for social)."""
+        loc = agent.state.presentLocationId
+        if not loc:
+            return []
+        out: List[Dict[str, Any]] = []
+        for other in self.world.agents.values():
+            if other.id == agent.id:
+                continue
+            if other.state.presentLocationId != loc:
+                continue
+            act = other.state.currentAction
+            out.append({
+                "id": other.id, "name": other.persona.name,
+                "actionType": act.type.value if act else "idle",
+            })
+        return out
+
+    def _perception_flags(self, agent: Agent) -> Dict[str, Any]:
+        st = agent.state
+        critical = [k for k, v in st.needs.items() if v <= CRITICAL_NEED_THRESHOLD]
+        pressure = "high" if st.cash < st.dailyLivingCost else "normal"
+        flags: Dict[str, Any] = {
+            "criticalNeeds": critical,
+            "financialPressure": pressure,
+        }
+        if st.legalStatus == LegalStatus.SUSPECTED:
+            flags["pendingInvestigation"] = {"since": st.suspectedSince}
+        # Surface unfilled jobs at the agent's current location as offers so
+        # unemployed agents can seek work rather than idle.
+        if st.employmentStatus != EmploymentStatus.EMPLOYED and st.presentLocationId:
+            offers = [
+                {"jobId": j.id, "occupation": j.occupation,
+                 "wagePerHour": j.wagePerHour}
+                for j in self.world.jobs.values()
+                if j.locationId == st.presentLocationId and not j.assignedAgentId
+            ]
+            if offers:
+                flags["employmentOffers"] = offers[:5]
+        return flags
+
+    def _current_location_block(self, agent: Agent) -> Dict[str, Any]:
+        loc = self.world.locations.get(agent.state.presentLocationId or "")
+        if loc is None:
+            return {"id": agent.state.presentLocationId}
+        return {"id": loc.id, "name": loc.name, "category": loc.category.value}
+
+    def _build_decision_request(self, agent: Agent, sim_iso: str) -> Dict[str, Any]:
+        return {
             "op": "decision", "simId": self.world.config.simId,
             "agentId": agent.id, "simTime": sim_iso,
             "persona": agent.persona.to_dict(), "state": agent.state.to_dict(),
+            "currentLocation": self._current_location_block(agent),
+            "reachable": self._reachable_for(agent),
+            "coLocated": self._colocated_for(agent),
+            "shortTermMemory": self._stm_lines(agent.id),
+            "perceptionFlags": self._perception_flags(agent),
+            "priceTable": self._price_table(),
         }
-        try:
-            resp = self.runtime.decision(request)
-        except Exception:
+
+    def _price_table(self) -> Dict[str, Any]:
+        # Compact action->cost hint sourced from location prices (best-effort).
+        prices = [loc.price for loc in self.world.locations.values()
+                  if loc.price is not None]
+        if not prices:
+            return {}
+        avg = round(sum(prices) / len(prices), 2)
+        return {"eat": avg, "shop": avg, "leisure": avg}
+
+    # -- harness calls (network I/O) ---------------------------------------
+    def _call_decision(self, agent: Agent, sim_iso: str) -> Optional[Dict[str, Any]]:
+        if self.runtime is None:
+            return None
+        return self.runtime.decision(self._build_decision_request(agent, sim_iso))
+
+    def _fan_out_decisions(self, agents: List[Agent], sim_iso: str):
+        """Yield (agent, response) pairs for a batch of decision calls.
+
+        Uses a bounded thread pool for the network-bound harness calls with
+        per-agent exception isolation (a single failure never aborts the tick).
+        Falls back to a sequential path when no runtime is configured or only a
+        single agent is pending (keeps unit tests with fakes deterministic).
+        """
+        if not agents:
+            return
+        if self.runtime is None:
+            for agent in agents:
+                yield agent, None
+            return
+        if len(agents) == 1:
+            agent = agents[0]
+            try:
+                yield agent, self._call_decision(agent, sim_iso)
+            except Exception as e:  # noqa: BLE001
+                print(f"[engine] decision error agent={agent.id}: {e}", flush=True)
+                yield agent, None
+            return
+
+        requests = {a.id: self._build_decision_request(a, sim_iso) for a in agents}
+        by_id = {a.id: a for a in agents}
+        results: Dict[str, Optional[Dict[str, Any]]] = {}
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=DECISION_MAX_WORKERS) as ex:
+            fut_to_id = {
+                ex.submit(self.runtime.decision, requests[a.id]): a.id
+                for a in agents
+            }
+            try:
+                for fut in concurrent.futures.as_completed(
+                        fut_to_id, timeout=DECISION_BATCH_DEADLINE_SEC):
+                    aid = fut_to_id[fut]
+                    try:
+                        results[aid] = fut.result()
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[engine] decision error agent={aid}: {e}", flush=True)
+                        results[aid] = None
+            except concurrent.futures.TimeoutError:
+                for fut, aid in fut_to_id.items():
+                    results.setdefault(aid, None)
+        # Deterministic apply order (by agent id) regardless of completion order.
+        for aid in sorted(by_id):
+            yield by_id[aid], results.get(aid)
+
+    def _apply_decision(self, agent: Agent, resp: Optional[Dict[str, Any]],
+                        sim_iso: str) -> None:
+        """Apply a harness decision response to the agent + log the thought."""
+        if resp is None:
             # fallback idle (Req 6.7 / 6.8)
             agent.state.currentAction = Action.from_dict({
                 "type": "idle", "targetType": "location",
@@ -263,33 +468,165 @@ class Ticker:
             self.event_log.append(sim_iso, "action", f"idle fallback for {agent.id}",
                                   agents=[agent.id], detail={"kind": "fallback"})
             return
+        self._record_usage(resp, sim_iso, agent.id)
         action_dict = resp.get("action")
-        if action_dict:
-            action_dict.setdefault("startedSimTime", sim_iso)
-            agent.state.currentAction = Action.from_dict(action_dict)
-            # Capture a compact, human-readable "thought process": the LLM's
-            # reasoning plus a snapshot of what the agent perceived when it
-            # decided. This feeds the decision-trail API + the SPA (Req 14.4).
-            reasoning = resp.get("reasoning") or ""
-            st = agent.state
-            perception = {
-                "simTime": sim_iso,
-                "locationId": st.presentLocationId,
-                "needs": dict(st.needs) if st.needs else {},
-                "cash": float(st.cash),
-                "legalStatus": st.legalStatus.value,
-                "employmentStatus": st.employmentStatus.value,
-            }
+        if not action_dict:
+            return
+        action_dict.setdefault("startedSimTime", sim_iso)
+        # Attach a straight-line route for travel actions so the SPA animates
+        # movement and the agent visibly relocates (Req 8 / 15).
+        try:
+            action = Action.from_dict(action_dict)
+        except Exception:  # noqa: BLE001 — malformed enum etc.
+            action = Action.from_dict({
+                "type": "idle", "targetType": "location",
+                "targetId": agent.state.presentLocationId or agent.persona.homeLocationId,
+                "expectedDurationMin": 10, "startedSimTime": sim_iso})
+        if action.type == ActionType.TRAVEL and action.targetType == TargetType.LOCATION:
+            dest = self.world.locations.get(action.targetId)
+            if dest is not None:
+                try:
+                    route = self.movement.compute_route(
+                        agent.state.lat, agent.state.lon, dest)
+                    action.route = route.coords
+                    action.travelMode = route.mode
+                    action.expectedDurationMin = route.duration_min
+                except Exception:  # noqa: BLE001 — out-of-bounds etc.
+                    pass
+        agent.state.currentAction = action
+        # Capture a compact, human-readable "thought process": the LLM's
+        # reasoning plus a snapshot of what the agent perceived (Req 14.4).
+        reasoning = resp.get("reasoning") or ""
+        st = agent.state
+        perception = {
+            "simTime": sim_iso,
+            "locationId": st.presentLocationId,
+            "needs": dict(st.needs) if st.needs else {},
+            "cash": float(st.cash),
+            "legalStatus": st.legalStatus.value,
+            "employmentStatus": st.employmentStatus.value,
+        }
+        self.event_log.append(
+            sim_iso, "action",
+            f"{agent.id} -> {action.type.value}"
+            + (f": {reasoning}" if reasoning else ""),
+            agents=[agent.id],
+            detail={
+                "kind": "accepted",
+                "action": action.to_dict(),
+                "reasoning": reasoning,
+                "perceptionInput": perception,
+            })
+        # Mirror the decision into short-term memory for continuity.
+        self._remember(agent.id,
+                       f"{sim_iso}: decided to {action.type.value}"
+                       + (f" — {reasoning}" if reasoning else ""))
+
+    # -- planning & reflection (thought logging) ---------------------------
+    def _should_plan(self, agent: Agent, sim_iso: str, sim_date: str) -> bool:
+        if self.runtime is None:
+            return False
+        if self._planned_on.get(agent.id) == sim_date:
+            return False
+        # Plan once around the agent's wake time (or first tick we see them).
+        wake = (agent.persona.wakeTime or "07:00")[:5]
+        return sim_iso[11:16] >= wake
+
+    def _trigger_plan(self, agent: Agent, sim_iso: str) -> None:
+        if self.runtime is None:
+            return
+        request = {
+            "op": "plan", "simId": self.world.config.simId,
+            "agentId": agent.id, "simTime": sim_iso,
+            "persona": agent.persona.to_dict(), "state": agent.state.to_dict(),
+            "reachable": self._reachable_for(agent),
+            "longTermMemory": self._stm_lines(agent.id),
+        }
+        try:
+            resp = self.runtime.plan(request)
+        except Exception as e:  # noqa: BLE001
+            print(f"[engine] plan error agent={agent.id}: {e}", flush=True)
+            return
+        if not isinstance(resp, dict):
+            return
+        self._record_usage(resp, sim_iso, agent.id)
+        plan = resp.get("plan")
+        if not isinstance(plan, list) or not plan:
+            return
+        agent.state.dayPlan = plan
+        summary = " -> ".join(p.get("type", "?") for p in plan[:12])
+        self.event_log.append(
+            sim_iso, "planning",
+            f"{agent.id} planned the day: {summary}",
+            agents=[agent.id],
+            detail={"kind": "day-plan", "plan": plan,
+                    "reasoning": resp.get("reasoning", "")})
+        self._remember(agent.id, f"{sim_iso}: planned day: {summary}")
+
+    def _trigger_reflect(self, agent: Agent, sim_iso: str) -> None:
+        if self.runtime is None:
+            return
+        request = {
+            "op": "reflect", "simId": self.world.config.simId,
+            "agentId": agent.id, "simTime": sim_iso,
+            "persona": agent.persona.to_dict(),
+            "shortTermMemory": self._stm_lines(agent.id),
+            "longTermMemory": self._stm_lines(agent.id),
+        }
+        try:
+            resp = self.runtime.reflect(request)
+        except Exception as e:  # noqa: BLE001
+            print(f"[engine] reflect error agent={agent.id}: {e}", flush=True)
+            return
+        if not isinstance(resp, dict):
+            return
+        self._record_usage(resp, sim_iso, agent.id)
+        reflections = resp.get("reflections")
+        if not isinstance(reflections, list) or not reflections:
+            return
+        for r in reflections:
+            text = (r or {}).get("text") if isinstance(r, dict) else None
+            if not text:
+                continue
             self.event_log.append(
-                sim_iso, "action",
-                f"{agent.id} -> {action_dict.get('type')}",
+                sim_iso, "memory",
+                f"{agent.id} reflected: {text}",
                 agents=[agent.id],
-                detail={
-                    "kind": "accepted",
-                    "action": action_dict,
-                    "reasoning": reasoning,
-                    "perceptionInput": perception,
-                })
+                detail={"kind": "reflection", "text": text,
+                        "sourceMemoryIds": (r or {}).get("sourceMemoryIds", [])})
+            self._remember(agent.id, f"{sim_iso}: reflection: {text}")
+
+    # -- budget + short-term memory helpers --------------------------------
+    def _record_usage(self, resp: Dict[str, Any], sim_iso: str,
+                      agent_id: str) -> None:
+        """Record token usage + spend from a harness response (Req 18.3)."""
+        usage = resp.get("tokenUsage") if isinstance(resp, dict) else None
+        if not isinstance(usage, dict):
+            return
+        model_id = usage.get("modelId", "")
+        purpose = usage.get("purpose", "decision_cycle")
+        try:
+            in_tok = int(usage.get("inputTokens", 0) or 0)
+            out_tok = int(usage.get("outputTokens", 0) or 0)
+        except (TypeError, ValueError):
+            in_tok = out_tok = 0
+        cost = self.budget.record_invocation(model_id, purpose, in_tok, out_tok)
+        self.event_log.append(
+            sim_iso, "model",
+            f"invocation {purpose} for {agent_id} ({in_tok}+{out_tok} tok)",
+            agents=[agent_id],
+            detail={"kind": "invocation", "modelId": model_id,
+                    "purpose": purpose, "inputTokens": in_tok,
+                    "outputTokens": out_tok, "costUSD": cost})
+
+    def _remember(self, agent_id: str, line: str) -> None:
+        buf = self._stm.setdefault(agent_id, [])
+        buf.append(line)
+        if len(buf) > STM_LIMIT:
+            del buf[: len(buf) - STM_LIMIT]
+
+    def _stm_lines(self, agent_id: str) -> List[Dict[str, Any]]:
+        return [{"text": t} for t in self._stm.get(agent_id, [])]
 
     def _run_conversations(self, sim_iso: str) -> int:
         """Form, run, and resolve conversations among co-located socialisers.
@@ -366,9 +703,11 @@ class Ticker:
                 persona = _self.world.agents.get(speaker_id)
                 if persona is not None:
                     payload["persona"] = persona.persona.to_dict()
+                payload["longTermMemory"] = _self._stm_lines(speaker_id)
                 resp = _self.runtime.utterance(payload)
                 if not isinstance(resp, dict):
                     return None
+                _self._record_usage(resp, _sim, speaker_id)
                 text = resp.get("utterance")
                 return text if isinstance(text, str) and text.strip() else None
 
@@ -399,6 +738,12 @@ class Ticker:
                         "utteranceCount": outcome.utterance_count,
                     })
                 started += 1
+                # Mirror a compact conversation summary into each participant's
+                # short-term memory for behavioural continuity.
+                snippet = "; ".join(
+                    f"{u.speaker}: {u.text}" for u in convo.utterances[:4])
+                for pid in convo.participants:
+                    self._remember(pid, f"{sim_iso}: talked at {loc} — {snippet}")
 
         return started
 
