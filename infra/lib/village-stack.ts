@@ -200,6 +200,18 @@ export class VillageStack extends cdk.Stack {
 
     // DynamoDB RW on table + indexes.
     assetFn.addToRolePolicy(dynamoRwStatement());
+    // Allow the asset Lambda to self-invoke (async) so a reseed can kick off the
+    // heavy portrait-generation phase in a separate invocation with its own
+    // timeout budget. Scoped to this function's own ARN.
+    assetFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [
+          `arn:aws:lambda:${region}:${account}:function:village-assets-${simulationId}-${environment}`,
+        ],
+      })
+    );
     // S3 read/write on the assets bucket (bucket ARN + objects prefix).
     assetsBucket.grantReadWrite(assetFn);
     // Bedrock: only the specific Stable Diffusion model ARN in us-west-2.

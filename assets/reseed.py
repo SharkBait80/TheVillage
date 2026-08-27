@@ -203,11 +203,13 @@ def _assign_jobs(agents, jobs):
 
 def _build_items(sim_id, config, locations, agents, jobs):
     pk = _pk(sim_id)
+    import time as _time
+    reseeded_at = str(int(_time.time() * 1000))  # ms epoch — bumps each reseed
     items = [
         {"PK": pk, "SK": "CONFIG", **config},
         {"PK": pk, "SK": "STATUS", "status": "stopped",
          "simTime": config["startSimTime"], "accel": config["accelerationFactor"],
-         "schemaVersion": 1},
+         "reseededAt": reseeded_at, "schemaVersion": 1},
     ]
     for loc in locations:
         items.append({"PK": pk, "SK": f"LOC#{loc['id']}", **loc})
@@ -238,7 +240,13 @@ def reseed(sim_id, population=None, use_llm=True, generate_assets=True):
     Portraits/artwork are generated per subject with a deterministic seed, so
     every agent gets a unique portrait; biographies + traits are LLM-generated
     per agent when `use_llm` is set (falls back to templates on model failure).
+
+    Biographies are generated CONCURRENTLY with a bounded thread pool so a large
+    population (e.g. 500 agents) completes well within the Lambda timeout; the
+    world is written to DynamoDB BEFORE portrait generation so a slow/timed-out
+    image phase never leaves the world empty.
     """
+    from concurrent.futures import ThreadPoolExecutor
     from generate_personas import generate_personas  # bundled alongside
 
     config = _load_json("config.json")
@@ -248,20 +256,67 @@ def reseed(sim_id, population=None, use_llm=True, generate_assets=True):
 
     deleted = delete_world(sim_id)
 
-    enricher = make_llm_enricher(sim_id) if use_llm else None
-    agents = generate_personas(pop, locations, seed=42, enrich=enricher)
+    llm_bios = False
+    if use_llm:
+        # First pass: build personas WITHOUT LLM (fast, deterministic).
+        agents = generate_personas(pop, locations, seed=42, enrich=None)
+        # Second pass: enrich bios concurrently, keyed by agent id.
+        enricher = make_llm_enricher(sim_id)
+
+        def _enrich_one(agent):
+            p = agent["persona"]
+            try:
+                extra = enricher({
+                    "name": p["name"], "age": p["age"],
+                    "occupation": p["occupation"], "mbti": p.get("mbti", ""),
+                    "traits": p.get("traits", []),
+                }) or {}
+            except Exception:  # noqa: BLE001
+                return
+            bio = str(extra.get("background") or "").strip()
+            if bio:
+                p["background"] = bio[:1000]
+            new_traits = extra.get("traits")
+            if isinstance(new_traits, list):
+                cleaned = [str(t).strip()[:40] for t in new_traits if str(t).strip()]
+                if 3 <= len(cleaned) <= 6:
+                    p["traits"] = cleaned
+
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            list(ex.map(_enrich_one, agents))
+        llm_bios = True
+    else:
+        agents = generate_personas(pop, locations, seed=42, enrich=None)
+
     _assign_jobs(agents, jobs)
 
     items = _build_items(sim_id, config, locations, agents, jobs)
-    _write(items)
+    _write(items)  # persist the world BEFORE the slow image phase
 
     assets_summary = None
     if generate_assets:
-        try:
-            import index as asset_index  # the Lambda's own module
-            assets_summary = asset_index.generate_all(sim_id)
-        except Exception as exc:  # noqa: BLE001 — reseed still succeeded
-            assets_summary = {"error": str(exc)}
+        # Portrait/artwork generation for a large population is heavy; run it in
+        # a SEPARATE async Lambda invocation with its own timeout budget so the
+        # reseed returns immediately with the world (and LLM bios) already
+        # written. Portraits then fill in progressively. Falls back to inline
+        # generation only if self-invocation isn't possible.
+        fn_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+        if fn_name:
+            try:
+                boto3.client("lambda", region_name=TABLE_REGION).invoke(
+                    FunctionName=fn_name,
+                    InvocationType="Event",
+                    Payload=json.dumps({"action": "generate_all", "simId": sim_id}).encode("utf-8"),
+                )
+                assets_summary = {"mode": "async-invoke", "status": "started"}
+            except Exception as exc:  # noqa: BLE001
+                assets_summary = {"error": f"async asset invoke failed: {exc}"}
+        else:
+            try:
+                import index as asset_index  # the Lambda's own module
+                assets_summary = asset_index.generate_all(sim_id)
+            except Exception as exc:  # noqa: BLE001 — reseed still succeeded
+                assets_summary = {"error": str(exc)}
 
     return {
         "simId": sim_id,
@@ -270,6 +325,6 @@ def reseed(sim_id, population=None, use_llm=True, generate_assets=True):
         "locations": len(locations),
         "jobs": len(jobs),
         "population": pop,
-        "llmBios": bool(enricher),
+        "llmBios": llm_bios,
         "assets": assets_summary,
     }

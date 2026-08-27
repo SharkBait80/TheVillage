@@ -128,13 +128,19 @@ def load_world(store: DynamoStore, parser: World_State_Parser,
 
 
 def write_status(store: DynamoStore, sim_id: str, status: SimStatus,
-                 sim_time_iso: str, accel: int) -> None:
-    store.put({
+                 sim_time_iso: str, accel: int,
+                 reseeded_at: Optional[str] = None) -> None:
+    item = {
         "PK": f"SIM#{sim_id}", "SK": sk_status(),
         "status": status.value, "simTime": sim_time_iso,
         "updatedAt": datetime.now().astimezone().isoformat(),
         "accel": accel, "schemaVersion": 1,
-    })
+    }
+    # Carry through the reseed marker so a running engine's status writes don't
+    # erase it (the engine uses it to detect a reseed and reload the world).
+    if reseeded_at is not None:
+        item["reseededAt"] = reseeded_at
+    store.put(item)
 
 
 def read_control(store: DynamoStore, sim_id: str) -> Optional[Dict[str, Any]]:
@@ -217,6 +223,7 @@ def main() -> None:
     persisted_status = store.get(sim_id, sk_status()) or {}
     persisted_sim_time = persisted_status.get("simTime")
     persisted_state = (persisted_status.get("status") or "").strip().lower()
+    current_reseed_marker = persisted_status.get("reseededAt")
     start_sim_dt = localize(datetime.fromisoformat(config.startSimTime))
     if persisted_sim_time:
         try:
@@ -267,6 +274,45 @@ def main() -> None:
 
     while True:
         loop_start = time.monotonic()
+
+        # Detect a reseed (world was deleted + regenerated out-of-band): the
+        # STATUS item carries a `reseededAt` marker that bumps on every reseed.
+        # When it changes we reload the world + reset the clock so the running
+        # engine simulates the NEW population instead of the stale in-memory one.
+        try:
+            latest_status = store.get(sim_id, sk_status()) or {}
+            marker = latest_status.get("reseededAt")
+            if marker is not None and marker != current_reseed_marker:
+                current_reseed_marker = marker
+                world = load_world(store, parser, sim_id)
+                config = world.config
+                clock = Simulation_Clock(
+                    start_sim_time=localize(datetime.fromisoformat(config.startSimTime)),
+                    acceleration_factor=config.accelerationFactor,
+                    real_clock=time.monotonic,
+                )
+                controller = Simulation_Controller(config)  # fresh: stopped
+                detention = world.locations.get(config.detentionFacilityId) \
+                    if config.detentionFacilityId else None
+                law = None
+                if detention is not None:
+                    social_ref = Social_Engine()
+                    law = Law_Enforcement_Engine(
+                        detention,
+                        lambda w, p: social_ref.get_relationship(w, p).sentiment)
+                ticker = Ticker(
+                    world=world, clock=clock, controller=controller,
+                    runtime=runtime, event_log=event_log, budget=budget,
+                    movement=Movement_Engine(list(world.locations.values())),
+                    economy=Economy_Engine(), social=Social_Engine(),
+                    crime=Crime_Engine(), law=law, persist=persist,
+                )
+                last_nonce = None  # a post-reseed start/resume must re-apply
+                print(f"[engine] reloaded world after reseed marker={marker} "
+                      f"agents={len(world.agents)}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"[engine] world reload check error: {e}", flush=True)
+
         # poll CONTROL item (<=1s per DESIGN §2)
         try:
             ctrl = read_control(store, sim_id)
@@ -300,7 +346,8 @@ def main() -> None:
 
         try:
             write_status(store, sim_id, controller.status,
-                         clock.sim_time_iso(), clock.acceleration_factor)
+                         clock.sim_time_iso(), clock.acceleration_factor,
+                         reseeded_at=current_reseed_marker)
         except Exception:
             pass
 

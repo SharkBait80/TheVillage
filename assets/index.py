@@ -401,28 +401,39 @@ def generate_all(sim_id):
     """Requirement 16.1 — one portrait per Agent + one artwork per Location.
 
     Continues with remaining subjects when one fails (R16.11). Returns a summary
-    dict of per-subject results. Plain callable for local/CLI use.
+    dict of per-subject results. Subjects are processed concurrently with a
+    bounded thread pool so large populations (e.g. 500 agents) complete within
+    the Lambda timeout; each subject's generate→store→manifest is independent.
     """
     style_clause = _art_style_clause(sim_id)
-    results = []
+    tasks = []  # (subject_type, subject_id, prompt, aspect_ratio)
 
     for agent_item in _list_agents(sim_id):
         subject_id, persona = _agent_subject(agent_item)
         if not subject_id:
             continue
-        prompt = build_agent_prompt(persona, style_clause)
-        results.append(
-            _process_subject(sim_id, "agent", subject_id, prompt, PORTRAIT_ASPECT)
-        )
+        tasks.append(("agent", subject_id,
+                      build_agent_prompt(persona, style_clause), PORTRAIT_ASPECT))
 
     for loc_item in _list_locations(sim_id):
         subject_id, loc = _location_subject(loc_item)
         if not subject_id:
             continue
-        prompt = build_location_prompt(loc, style_clause)
-        results.append(
-            _process_subject(sim_id, "location", subject_id, prompt, LOCATION_ASPECT)
-        )
+        tasks.append(("location", subject_id,
+                      build_location_prompt(loc, style_clause), LOCATION_ASPECT))
+
+    results = []
+    max_workers = int(os.environ.get("ASSET_CONCURRENCY", "12"))
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [
+            ex.submit(_process_subject, sim_id, st, sid, prompt, aspect)
+            for (st, sid, prompt, aspect) in tasks
+        ]
+        for fut in futures:
+            try:
+                results.append(fut.result())
+            except Exception as exc:  # noqa: BLE001 — per-subject failure isolated
+                results.append({"status": "failed", "reason": str(exc)})
 
     generated = sum(1 for r in results if r["status"] in ("generated", "regenerated"))
     failed = sum(1 for r in results if r["status"] == "failed")
