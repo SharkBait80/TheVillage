@@ -6,6 +6,7 @@
 import { Polyline } from 'react-leaflet'
 import type { LatLngExpression } from 'leaflet'
 import type { StateAgent } from '../types'
+import { isValidLatLon } from '../geo'
 
 interface TravelPathProps {
   agent: StateAgent
@@ -20,14 +21,21 @@ interface TravelPathProps {
 function remainingPath(agent: StateAgent): LatLngExpression[] {
   const route = agent.route ?? agent.action?.route ?? []
   if (!route || route.length < 2) return []
-  const here: LatLngExpression = [agent.lat, agent.lon]
   const progress = agent.action?.progress ?? 0
   // Determine how far along the polyline we are and keep the forward segment.
   const total = route.length - 1
   const scaled = Math.max(0, Math.min(total, progress * total))
   const nextIndex = Math.min(route.length - 1, Math.ceil(scaled))
-  const ahead = route.slice(nextIndex).map((p) => [p.lat, p.lon] as LatLngExpression)
-  return [here, ...ahead]
+  const ahead = route
+    .slice(nextIndex)
+    .filter((p) => isValidLatLon(p?.lat, p?.lon))
+    .map((p) => [p.lat, p.lon] as LatLngExpression)
+  // Only prefix the live position when it is a valid coordinate; otherwise the
+  // path still renders from the remaining route points.
+  const path: LatLngExpression[] = isValidLatLon(agent.lat, agent.lon)
+    ? [[agent.lat, agent.lon] as LatLngExpression, ...ahead]
+    : ahead
+  return path
 }
 
 export function TravelPath({ agent }: TravelPathProps) {

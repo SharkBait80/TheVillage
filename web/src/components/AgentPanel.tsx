@@ -143,6 +143,7 @@ export function AgentPanel({ agentId, onClose }: AgentPanelProps) {
           <h2>{detail.persona.name}</h2>
           <p className="subtitle">
             {detail.persona.age} · {detail.persona.occupation}
+            {detail.persona.mbti ? ` · ${detail.persona.mbti}` : ''}
           </p>
           <div style={{ clear: 'both' }} />
 

@@ -83,6 +83,16 @@ TRAITS = [
     "competitive", "easygoing", "principled", "playful", "cautious",
 ]
 
+# The 16 Myers-Briggs personality types. Each agent is assigned one (Req: varied
+# personalities). The type governs decisions (E/I socialising, J/P structure)
+# and conversational tone (S/N, T/F) in the engine's heuristics.
+MBTI_TYPES = [
+    "ISTJ", "ISFJ", "INFJ", "INTJ",
+    "ISTP", "ISFP", "INFP", "INTP",
+    "ESTP", "ESFP", "ENFP", "ENTP",
+    "ESTJ", "ESFJ", "ENFJ", "ENTJ",
+]
+
 # Rough suburb feel for background flavour keyed off home location id prefix.
 BACKGROUND_TEMPLATES = [
     "Grew up in regional Victoria before moving to Melbourne for {occ_lower} work; loves the laneway coffee culture.",
@@ -173,6 +183,16 @@ def generate_personas(count: int, locations: list, seed: int = 42) -> list[dict]
         occupation_assignment.append(rng.choice(NON_JOB_OCCUPATIONS))
     rng.shuffle(occupation_assignment)
 
+    # Assign MBTI personality types so the population is evenly varied across
+    # all 16 types (deterministic). Cycling the shuffled type list then
+    # shuffling the per-agent assignment keeps the distribution balanced while
+    # decoupling personality from occupation order.
+    mbti_pool: list[str] = []
+    while len(mbti_pool) < count:
+        mbti_pool.extend(MBTI_TYPES)
+    mbti_assignment = mbti_pool[:count]
+    rng.shuffle(mbti_assignment)
+
     agents: list[dict] = []
     for i in range(count):
         name = _unique_full_name(rng, first, last, used_names)
@@ -225,6 +245,7 @@ def generate_personas(count: int, locations: list, seed: int = 42) -> list[dict]
                 "background": background,
                 "homeLocationId": home_id,
                 "wakeTime": wake_time,
+                "mbti": mbti_assignment[i],
             },
             "state": {
                 "lat": home_lat,

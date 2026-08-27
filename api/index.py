@@ -781,14 +781,13 @@ def _heuristic_verdict(title: str, description: str) -> dict:
                 "plausible": True,
                 "relevant": True,
                 "toxic": True,
-                "reason": "local heuristic flagged disallowed content "
-                          "(LLM moderator unavailable)",
+                "reason": "This event contains disallowed content.",
             }
     return {
         "plausible": True,
         "relevant": True,
         "toxic": False,
-        "reason": "LLM moderator unavailable; passed local heuristic checks",
+        "reason": "Event accepted.",
     }
 
 

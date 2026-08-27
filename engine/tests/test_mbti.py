@@ -1,0 +1,144 @@
+"""Tests for MBTI personality influence on decisions and conversations.
+
+Covers:
+  - MBTI biases the socialise threshold (extravert vs introvert).
+  - Conversation utterances address the partner by NAME (never "agent").
+  - MBTI colours conversational tone.
+  - Persona.mbti round-trips and is backward compatible when absent.
+"""
+
+from village.heuristics import heuristic_decision, local_utterance
+from village.models import (AgentState, Config, EmploymentStatus, LegalStatus,
+                            Location, LocationCategory, OpeningHours, Persona,
+                            Agent)
+from village.ticker import WorldState
+
+H247 = [OpeningHours("00:00", "23:59")] * 7
+
+
+def _loc(lid, name, cat, lat, lon):
+    return Location(id=lid, name=name, category=cat, lat=lat, lon=lon,
+                    capacity=20, hours=H247)
+
+
+def _agent(aid, lat, lon, present, needs, *, mbti="", name=None):
+    st = AgentState(lat=lat, lon=lon, presentLocationId=present, needs=needs,
+                    cash=100.0, employmentStatus=EmploymentStatus.UNEMPLOYED,
+                    legalStatus=LegalStatus.CLEAR, jobId=None, dailyLivingCost=40.0)
+    persona = Persona(name=name or f"Name{aid}", age=30, occupation="Barista",
+                      traits=["warm"], background="b", homeLocationId="loc_home",
+                      mbti=mbti)
+    return Agent(id=aid, persona=persona, state=st)
+
+
+def _world(agents, locations):
+    return WorldState(config=Config(simId="melb"),
+                      agents={a.id: a for a in agents},
+                      locations={l.id: l for l in locations},
+                      jobs={})
+
+
+def _locs():
+    return [
+        _loc("loc_home", "Home", LocationCategory.RESIDENCE, -37.810, 144.950),
+        _loc("loc_park", "Park", LocationCategory.LEISURE, -37.815, 144.955),
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# Persona model backward compatibility
+# --------------------------------------------------------------------------- #
+
+def test_persona_mbti_roundtrips():
+    p = Persona(name="Mei Chen", age=30, occupation="Chef", traits=["warm"],
+                background="b", homeLocationId="loc_home", mbti="ENFP")
+    d = p.to_dict()
+    assert d["mbti"] == "ENFP"
+    assert Persona.from_dict(d).mbti == "ENFP"
+
+
+def test_persona_without_mbti_is_backward_compatible():
+    # A persona dict persisted before the field existed must still load.
+    d = {"name": "Old Agent", "age": 40, "occupation": "Nurse",
+         "traits": ["gentle"], "background": "b", "homeLocationId": "loc_home"}
+    p = Persona.from_dict(d)
+    assert p.mbti == ""
+
+
+# --------------------------------------------------------------------------- #
+# MBTI governs decisions
+# --------------------------------------------------------------------------- #
+
+def test_extravert_socialises_at_higher_social_level_than_introvert():
+    """With co-located company and a mid-level social need, an extravert should
+    seek company where an introvert holds off (MBTI E/I threshold)."""
+    sim = "2026-03-02T12:00:00+11:00"
+    # social = 52 sits above introvert threshold (25) and extravert (60):
+    # extravert triggers the socialise branch, introvert does not.
+    needs = {"hunger": 90, "energy": 90, "social": 52, "fun": 90}
+
+    extravert = _agent("agent_e", -37.810, 144.950, "loc_home", needs, mbti="ENFP")
+    partner_e = _agent("agent_pe", -37.810, 144.950, "loc_home",
+                       {"hunger": 90, "energy": 90, "social": 90, "fun": 90})
+    world_e = _world([extravert, partner_e], _locs())
+    d_e = heuristic_decision(extravert, world_e, sim)
+
+    introvert = _agent("agent_i", -37.810, 144.950, "loc_home", needs, mbti="INTJ")
+    partner_i = _agent("agent_pi", -37.810, 144.950, "loc_home",
+                       {"hunger": 90, "energy": 90, "social": 90, "fun": 90})
+    world_i = _world([introvert, partner_i], _locs())
+    d_i = heuristic_decision(introvert, world_i, sim)
+
+    assert d_e["type"] == "socialise"
+    assert d_i["type"] != "socialise"
+
+
+def test_mbti_decisions_are_deterministic():
+    sim = "2026-03-02T12:00:00+11:00"
+    a = _agent("agent_e", -37.810, 144.950, "loc_home",
+               {"hunger": 90, "energy": 90, "social": 52, "fun": 90}, mbti="ENFP")
+    p = _agent("agent_p", -37.810, 144.950, "loc_home",
+               {"hunger": 90, "energy": 90, "social": 90, "fun": 90})
+    world = _world([a, p], _locs())
+    assert heuristic_decision(a, world, sim) == heuristic_decision(a, world, sim)
+
+
+# --------------------------------------------------------------------------- #
+# Conversations use the partner's name, never "agent"
+# --------------------------------------------------------------------------- #
+
+def test_utterance_addresses_partner_by_first_name():
+    speaker = Persona(name="Mei Chen", age=30, occupation="Chef", traits=["warm"],
+                      background="b", homeLocationId="loc_home", mbti="ENFP")
+    line = local_utterance(speaker, "Park", turn_index=0,
+                           sim_iso="2026-03-02T12:00:00+11:00",
+                           partner_name="Ravi Patel")
+    assert "Ravi" in line
+    assert "agent" not in line.lower()
+
+
+def test_utterance_never_says_agent_even_without_partner():
+    speaker = Persona(name="Mei Chen", age=30, occupation="Chef", traits=["warm"],
+                      background="b", homeLocationId="loc_home", mbti="ISTJ")
+    for turn in range(6):
+        line = local_utterance(speaker, "Cafe", turn_index=turn,
+                               sim_iso="2026-03-02T12:00:00+11:00",
+                               partner_name="Sofia Rossi")
+        assert "agent" not in line.lower(), line
+
+
+def test_utterance_tone_varies_by_mbti():
+    """Different MBTI types should not all produce the identical opener."""
+    partner = "Ravi Patel"
+    sim = "2026-03-02T12:00:00+11:00"
+    feeler = Persona(name="Mei Chen", age=30, occupation="Chef", traits=["warm"],
+                     background="b", homeLocationId="loc_home", mbti="ENFJ")
+    thinker = Persona(name="Mei Chen", age=30, occupation="Chef", traits=["warm"],
+                      background="b", homeLocationId="loc_home", mbti="ESTJ")
+    lines_f = {local_utterance(feeler, "Cafe", t, sim, partner_name=partner)
+               for t in range(1, 6)}
+    lines_t = {local_utterance(thinker, "Cafe", t, sim, partner_name=partner)
+               for t in range(1, 6)}
+    # The two personalities draw from different flavour pools, so their line
+    # sets should not be identical.
+    assert lines_f != lines_t

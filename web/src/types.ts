@@ -176,6 +176,7 @@ export interface AgentDetail {
     traits: string[]
     background: string
     homeLocationId?: string
+    mbti?: string
   }
   needs: NeedLevels
   critical?: Partial<Record<keyof NeedLevels, boolean>>

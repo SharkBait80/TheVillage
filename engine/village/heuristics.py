@@ -70,6 +70,61 @@ def _seeded_rng(agent_id: str, sim_iso: str) -> random.Random:
     return random.Random(int(digest[:16], 16))
 
 
+# --------------------------------------------------------------------------- #
+# Myers-Briggs (MBTI) personality helpers.
+#
+# An agent's 4-letter type biases its behaviour along four axes:
+#   E/I  Extraversion vs Introversion  -> how eagerly it seeks company
+#   S/N  Sensing vs Intuition          -> conversational flavour (concrete vs ideas)
+#   T/F  Thinking vs Feeling           -> conversational flavour (facts vs warmth)
+#   J/P  Judging vs Perceiving         -> structure vs spontaneity of activities
+# All helpers are pure and tolerate a missing/blank type (neutral behaviour).
+# --------------------------------------------------------------------------- #
+
+def _mbti_of(agent: Any) -> str:
+    persona = getattr(agent, "persona", None)
+    mbti = getattr(persona, "mbti", "") if persona is not None else ""
+    return (mbti or "").upper()
+
+
+def _is_extravert(mbti: str) -> bool:
+    return bool(mbti) and mbti[0] == "E"
+
+
+def _is_introvert(mbti: str) -> bool:
+    return bool(mbti) and mbti[0] == "I"
+
+
+def _is_judging(mbti: str) -> bool:
+    return len(mbti) >= 4 and mbti[3] == "J"
+
+
+def _is_perceiving(mbti: str) -> bool:
+    return len(mbti) >= 4 and mbti[3] == "P"
+
+
+def _social_threshold_for(mbti: str) -> int:
+    """Effective 'social need is low' threshold for this personality.
+
+    Extraverts feel the pull of company sooner (higher threshold => triggers
+    earlier); introverts tolerate more solitude before seeking others.
+    """
+    if _is_extravert(mbti):
+        return SOCIAL_LOW + 20
+    if _is_introvert(mbti):
+        return SOCIAL_LOW - 15
+    return SOCIAL_LOW
+
+
+def _mingle_probability(mbti: str) -> float:
+    """Baseline chance an otherwise-satisfied agent chooses to mingle/socialise."""
+    if _is_extravert(mbti):
+        return 0.75
+    if _is_introvert(mbti):
+        return 0.25
+    return 0.5
+
+
 def _is_night(hhmm: str) -> bool:
     """True if the clock time is night (>= 22:00 or < 06:00)."""
     return hhmm >= NIGHT_START or hhmm < NIGHT_END
@@ -237,6 +292,9 @@ def heuristic_decision(agent: Any, world: Any, sim_iso: str) -> Dict[str, Any]:
     needs = st.needs or {}
     hhmm = sim_iso[11:16] if len(sim_iso) >= 16 else "12:00"
     avoid = _avoided_location_ids(agent, sim_iso)
+    mbti = _mbti_of(agent)
+    social_low = _social_threshold_for(mbti)
+    mingle_p = _mingle_probability(mbti)
 
     legal_status = getattr(st.legalStatus, "value", st.legalStatus)
     home = agent.persona.homeLocationId
@@ -245,7 +303,7 @@ def heuristic_decision(agent: Any, world: Any, sim_iso: str) -> Dict[str, Any]:
     # 1. Detained agents may only sleep/eat/socialise/idle at their location.
     if legal_status == "detained":
         colo = _colocated_other_ids(agent, world)
-        if needs.get("social", 100) <= SOCIAL_LOW and colo:
+        if needs.get("social", 100) <= social_low and colo:
             return _action("socialise", "agent", rng.choice(colo), DUR_SOCIALISE)
         if needs.get("hunger", 100) <= HUNGER_LOW:
             return _action("eat", "location", here, DUR_EAT)
@@ -257,7 +315,7 @@ def heuristic_decision(agent: Any, world: Any, sim_iso: str) -> Dict[str, Any]:
         if _is_at(agent, attractor):
             # Already there: enjoy it / socialise if company present.
             colo = _colocated_other_ids(agent, world)
-            if colo and rng.random() < 0.6:
+            if colo and rng.random() < mingle_p:
                 return _action("socialise", "agent", rng.choice(colo), DUR_SOCIALISE)
             return _action("leisure", "location", attractor, DUR_LEISURE)
         if rng.random() < 0.5:  # not everyone drops everything
@@ -303,7 +361,9 @@ def heuristic_decision(agent: Any, world: Any, sim_iso: str) -> Dict[str, Any]:
             return _action("travel", "location", job_loc, DUR_TRAVEL)
 
     # 7. Social low -> socialise with a co-located agent, else travel to mingle.
-    if social <= SOCIAL_LOW:
+    #    The threshold is personality-adjusted: extraverts seek company sooner,
+    #    introverts tolerate more solitude first (MBTI E/I).
+    if social <= social_low:
         colo = _colocated_other_ids(agent, world)
         if colo:
             # Deterministically pick a partner; co-located low-social agents
@@ -325,16 +385,20 @@ def heuristic_decision(agent: Any, world: Any, sim_iso: str) -> Dict[str, Any]:
                 return _action("leisure", "location", leisure, DUR_LEISURE)
             return _action("travel", "location", leisure, DUR_TRAVEL)
 
-    # 9. Otherwise: keep the world lively. Prefer socialising with company,
-    #    else mingle toward a busy/leisure spot, else leisure in place.
+    # 9. Otherwise: keep the world lively. Extraverts strongly prefer company,
+    #    introverts lean toward solo leisure (MBTI E/I via ``mingle_p``).
     colo = _colocated_other_ids(agent, world)
-    if colo and rng.random() < 0.5:
+    if colo and rng.random() < mingle_p:
         return _action("socialise", "agent", rng.choice(colo), DUR_SOCIALISE)
+    # Judging types like a purposeful outing (travel to a destination);
+    # perceiving types are happy to relax where they are (MBTI J/P).
     dest = _busiest_social_location(agent, world, avoid=avoid)
-    if dest and not _is_at(agent, dest):
+    if dest and not _is_at(agent, dest) and not (_is_perceiving(mbti) and rng.random() < 0.5):
         return _action("travel", "location", dest, DUR_TRAVEL)
     if dest:
         return _action("leisure", "location", dest, DUR_LEISURE)
+    if _is_at(agent, here):
+        return _action("leisure", "location", here, DUR_LEISURE)
 
     # True last resort: idle in place.
     return _action("idle", "location", here, DUR_IDLE)
@@ -356,40 +420,100 @@ _SMALL_TALK = (
     "what brings you here?",
 )
 
+# Personality-flavoured small talk. Keyed by MBTI axis so the same agent sounds
+# consistent: intuitive/feeling types muse and connect; sensing/thinking types
+# stay concrete and practical.
+_SMALL_TALK_BY_AXIS = {
+    "N": (
+        "do you ever wonder what this city will be like in ten years?",
+        "I've been dreaming up a new project lately.",
+        "there's something magical about this place, isn't there?",
+    ),
+    "S": (
+        "the tram was right on time today, believe it or not.",
+        "good coffee here — I come for it every week.",
+        "did you catch the weather? Perfect for a walk.",
+    ),
+    "F": (
+        "it's so good to see a friendly face.",
+        "how are you really doing?",
+        "I always feel better after a chat with you.",
+    ),
+    "T": (
+        "I've been mulling over a tricky problem at work.",
+        "makes sense to plan the week out, don't you think?",
+        "interesting how the markets have been moving.",
+    ),
+}
+
+
+def _persona_field(persona: Any, field: str, default: str = "") -> str:
+    return getattr(persona, field, default) or default
+
+
+def _small_talk_for(mbti: str, rng: random.Random) -> str:
+    """Pick a small-talk line coloured by the speaker's MBTI (falls back neutral)."""
+    pools: List[str] = list(_SMALL_TALK)
+    if len(mbti) >= 3:
+        # Second letter S/N, third letter T/F.
+        pools = list(_SMALL_TALK_BY_AXIS.get(mbti[1], ()))
+        pools += list(_SMALL_TALK_BY_AXIS.get(mbti[2], ()))
+    if not pools:
+        pools = list(_SMALL_TALK)
+    return rng.choice(pools)
+
 
 def local_utterance(speaker_persona: Any, location_name: str,
                     turn_index: int, sim_iso: str,
-                    memory_lines: Optional[List[str]] = None) -> str:
+                    memory_lines: Optional[List[str]] = None,
+                    partner_name: Optional[str] = None) -> str:
     """Deterministic, persona-flavoured small-talk line (no LLM needed).
 
-    Keeps conversations flowing when the harness is unavailable. If the speaker
-    has a recent memory referencing an injected world event, the line refers to
-    it so agents "talk about" the explosion/festival/etc.
+    Keeps conversations flowing when the harness is unavailable. Agents address
+    each other by ``partner_name`` (never as "agent") and their MBTI type
+    colours how they speak. If the speaker has a recent memory referencing an
+    injected world event, the line refers to it so agents "talk about" the
+    explosion/festival/etc.
     """
-    name = getattr(speaker_persona, "name", "Someone")
-    occupation = getattr(speaker_persona, "occupation", "local")
+    name = _persona_field(speaker_persona, "name", "Someone")
+    occupation = _persona_field(speaker_persona, "occupation", "local")
+    mbti = _persona_field(speaker_persona, "mbti").upper()
+    # First name only feels natural in conversation.
+    partner = (partner_name or "").strip().split(" ")[0] if partner_name else ""
     seed = f"{name}|{sim_iso}|{turn_index}"
     rng = _seeded_rng(seed, sim_iso)
 
-    # If a memory mentions an injected event, reference it sometimes.
-    event_line = _event_talk(memory_lines, rng)
+    # If a memory mentions an injected event, reference it sometimes — still
+    # addressing the partner by name where we have it.
+    event_line = _event_talk(memory_lines, rng, partner)
     if event_line and rng.random() < 0.7:
         return event_line[:500]
 
     if turn_index == 0:
         greeting = rng.choice(_GREETINGS)
-        return f"{greeting}! {rng.choice(_SMALL_TALK)}"[:500]
-    talk = rng.choice(_SMALL_TALK)
-    flavour = rng.choice((
-        f"Anyway, as a {occupation}, I keep busy.",
-        f"Nice to run into you at {location_name}.",
-        "Take care of yourself.",
-        "We should catch up more often.",
-    ))
+        who = f" {partner}" if partner else ""
+        return f"{greeting}{who}! {_small_talk_for(mbti, rng)}"[:500]
+    talk = _small_talk_for(mbti, rng)
+    # Extraverts are more effusive and name the partner; introverts are terser.
+    if partner and (_is_extravert(mbti) or rng.random() < 0.5):
+        flavour = rng.choice((
+            f"Anyway {partner}, as a {occupation} I keep busy.",
+            f"Good to run into you at {location_name}, {partner}.",
+            f"Take care, {partner}.",
+            f"We should catch up more often, {partner}.",
+        ))
+    else:
+        flavour = rng.choice((
+            f"Anyway, as a {occupation}, I keep busy.",
+            f"Nice to run into you at {location_name}.",
+            "Take care of yourself.",
+            "We should catch up more often.",
+        ))
     return f"{talk} {flavour}"[:500]
 
 
-def _event_talk(memory_lines: Optional[List[str]], rng: random.Random) -> Optional[str]:
+def _event_talk(memory_lines: Optional[List[str]], rng: random.Random,
+                partner: str = "") -> Optional[str]:
     """Extract a conversational line about a remembered injected event."""
     if not memory_lines:
         return None
@@ -404,8 +528,67 @@ def _event_talk(memory_lines: Optional[List[str]], rng: random.Random) -> Option
                 "Can you believe",
                 "Everyone's talking about",
             ))
-            return f"{opener} {title}? Wild, isn't it."
+            who = f", {partner}" if partner else ""
+            return f"{opener} {title}{who}? Wild, isn't it."
     return None
 
 
-__all__ = ["heuristic_decision", "local_utterance"]
+__all__ = ["heuristic_decision", "local_utterance", "in_world_reason"]
+
+
+# In-world, player-facing justification for a chosen action. This is what the
+# UI's decision trail shows, so it must read like the agent's own thought — it
+# must NEVER reference the engine, the LLM, or any implementation detail.
+_REASON_BY_ACTION: Dict[str, tuple] = {
+    "sleep": (
+        "I'm worn out — time to rest.",
+        "Feeling drained; I need some sleep.",
+        "It's late and I'm tired, so I'm turning in.",
+    ),
+    "eat": (
+        "I'm hungry, so I'm getting something to eat.",
+        "Time for a bite — my stomach's rumbling.",
+        "Could really go for a meal right now.",
+    ),
+    "work": (
+        "I've got work to do, so I'm getting on with it.",
+        "It's my shift — best get to it.",
+        "Time to earn my keep.",
+    ),
+    "travel": (
+        "Heading somewhere I need to be.",
+        "Time to make my way across town.",
+        "On the move to where I'm headed next.",
+    ),
+    "socialise": (
+        "I could use some company, so I'm saying hello.",
+        "Feeling a bit lonely — nice to chat with someone.",
+        "Good to catch up with a familiar face.",
+    ),
+    "leisure": (
+        "I've earned a little downtime.",
+        "Time to relax and enjoy myself.",
+        "Fancy a bit of fun to unwind.",
+    ),
+    "shop": (
+        "Popping out to pick up a few things.",
+        "Time to do a spot of shopping.",
+        "Need to grab a couple of bits.",
+    ),
+    "idle": (
+        "Just taking a quiet moment.",
+        "Nothing pressing right now — happy to pause.",
+        "Content to stay put for a bit.",
+    ),
+}
+
+
+def in_world_reason(action_type: str, agent_id: str, sim_iso: str) -> str:
+    """A short, in-character reason for the agent's action (UI-facing).
+
+    Deterministic given ``(agent_id, sim_iso, action_type)`` so replays are
+    stable. Never mentions the engine, heuristics, or the LLM.
+    """
+    options = _REASON_BY_ACTION.get(action_type) or _REASON_BY_ACTION["idle"]
+    rng = _seeded_rng(f"{agent_id}|reason|{action_type}", sim_iso)
+    return rng.choice(options)

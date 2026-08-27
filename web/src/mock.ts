@@ -72,6 +72,7 @@ interface MockAgent {
   traits: string[]
   background: string
   homeLocationId: string
+  mbti: string
   lat: number
   lon: number
   // wander target
@@ -98,6 +99,12 @@ const TRAITS = [
   ['shy', 'observant', 'loyal'],
   ['bold', 'cheeky', 'generous'],
 ]
+const MBTI = [
+  'ISTJ', 'ISFJ', 'INFJ', 'INTJ',
+  'ISTP', 'ISFP', 'INFP', 'INTP',
+  'ESTP', 'ESFP', 'ENFP', 'ENTP',
+  'ESTJ', 'ESFJ', 'ENFJ', 'ENTJ',
+]
 
 function makeAgents(count: number): MockAgent[] {
   const agents: MockAgent[] = []
@@ -113,6 +120,7 @@ function makeAgents(count: number): MockAgent[] {
       traits: TRAITS[i % TRAITS.length],
       background: 'A friendly Melburnian going about a cozy day in the village.',
       homeLocationId: home.id,
+      mbti: MBTI[i % MBTI.length],
       lat,
       lon,
       tlat: clampLat(lat + (rnd() - 0.5) * 0.01),
@@ -406,6 +414,7 @@ export const mockBackend = {
         traits: a.traits,
         background: a.background,
         homeLocationId: a.homeLocationId,
+        mbti: a.mbti,
       },
       needs: {
         hunger: Math.round(a.needs.hunger),

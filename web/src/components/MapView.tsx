@@ -11,6 +11,7 @@ import { AgentMarker } from './AgentMarker'
 import { LocationMarker } from './LocationMarker'
 import { TravelPath } from './TravelPath'
 import { ConversationIndicator } from './ConversationIndicator'
+import { isValidLatLon } from '../geo'
 
 // Melbourne map bounds (Req3.3): lat [-38.00, -37.70], lon [144.85, 145.10].
 const BOUNDS = L.latLngBounds([-38.0, 144.85], [-37.7, 145.1])
@@ -82,15 +83,18 @@ export function MapView({
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
-        {/* Locations first so agents render on top. */}
-        {locations.map((loc) => (
-          <LocationMarker
-            key={loc.id}
-            location={loc}
-            selected={loc.id === selectedLocationId}
-            onSelect={onSelectLocation}
-          />
-        ))}
+        {/* Locations first so agents render on top. Skip any without a valid
+            coordinate so one malformed record can't crash the map. */}
+        {locations
+          .filter((loc) => isValidLatLon(loc.lat, loc.lon))
+          .map((loc) => (
+            <LocationMarker
+              key={loc.id}
+              location={loc}
+              selected={loc.id === selectedLocationId}
+              onSelect={onSelectLocation}
+            />
+          ))}
 
         {/* Travel paths for currently-travelling agents (Req15.4). */}
         {agents.filter(isTravelling).map((a) => (
@@ -106,16 +110,19 @@ export function MapView({
           />
         ))}
 
-        {/* Agent markers, individually selectable even when overlapping (Req15.2). */}
-        {agents.map((a, i) => (
-          <AgentMarker
-            key={a.id}
-            agent={a}
-            index={i}
-            selected={a.id === selectedAgentId}
-            onSelect={onSelectAgent}
-          />
-        ))}
+        {/* Agent markers, individually selectable even when overlapping (Req15.2).
+            Skip any without a valid coordinate to avoid Leaflet LatLng errors. */}
+        {agents
+          .filter((a) => isValidLatLon(a.lat, a.lon))
+          .map((a, i) => (
+            <AgentMarker
+              key={a.id}
+              agent={a}
+              index={i}
+              selected={a.id === selectedAgentId}
+              onSelect={onSelectAgent}
+            />
+          ))}
       </MapContainer>
     </div>
   )

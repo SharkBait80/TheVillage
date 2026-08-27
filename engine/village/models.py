@@ -178,6 +178,10 @@ class Persona:
     background: str
     homeLocationId: str
     wakeTime: str = "07:00"
+    # Myers-Briggs personality type (e.g. "ENFP"). Optional for backward
+    # compatibility with personas persisted before this field existed; when
+    # absent it reads as "" and the behaviour engine falls back to neutral.
+    mbti: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -188,6 +192,7 @@ class Persona:
             "background": self.background,
             "homeLocationId": self.homeLocationId,
             "wakeTime": self.wakeTime,
+            "mbti": self.mbti,
         }
 
     @classmethod
@@ -200,6 +205,7 @@ class Persona:
             background=d.get("background", ""),
             homeLocationId=d["homeLocationId"],
             wakeTime=d.get("wakeTime", "07:00"),
+            mbti=(d.get("mbti") or "").upper(),
         )
 
 

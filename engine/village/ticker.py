@@ -24,7 +24,7 @@ from .economy import Economy_Engine
 from .eventlog import Event_Log
 from .events_inject import (Event_Propagation, Injected_Event,
                             add_sim_minutes, AVOID_TTL_MIN, ATTRACT_TTL_MIN)
-from .heuristics import heuristic_decision, local_utterance
+from .heuristics import heuristic_decision, local_utterance, in_world_reason
 from .law import Law_Enforcement_Engine
 from .crime import CrimeValidationError
 from .models import (Action, ActionType, Agent, Config, CrimeType,
@@ -794,7 +794,8 @@ class Ticker:
                 "type": "idle", "targetType": "location",
                 "targetId": agent.state.presentLocationId or agent.persona.homeLocationId,
                 "expectedDurationMin": 10, "startedSimTime": sim_iso})
-            self.event_log.append(sim_iso, "action", f"idle fallback for {agent.id}",
+            self.event_log.append(sim_iso, "action",
+                                  f"{agent.id} -> idle: {in_world_reason('idle', agent.id, sim_iso)}",
                                   agents=[agent.id], detail={"kind": "fallback"})
             return
         self._attach_travel_route(agent, action)
@@ -808,18 +809,22 @@ class Ticker:
             "legalStatus": st.legalStatus.value,
             "employmentStatus": st.employmentStatus.value,
         }
+        # In-world, player-facing justification. `detail.kind` still records
+        # "heuristic" for internal analytics, but nothing user-visible
+        # (description / reasoning / memory) references the engine or the LLM.
+        reasoning = in_world_reason(action.type.value, agent.id, sim_iso)
         self.event_log.append(
             sim_iso, "action",
-            f"{agent.id} -> {action.type.value} (heuristic)",
+            f"{agent.id} -> {action.type.value}: {reasoning}",
             agents=[agent.id],
             detail={
                 "kind": "heuristic",
                 "action": action.to_dict(),
-                "reasoning": "heuristic decision (no LLM runtime)",
+                "reasoning": reasoning,
                 "perceptionInput": perception,
             })
         self._remember(agent.id,
-                       f"{sim_iso}: decided to {action.type.value} (heuristic)")
+                       f"{sim_iso}: decided to {action.type.value} — {reasoning}")
 
     # -- planning & reflection (thought logging) ---------------------------
     def _should_plan(self, agent: Agent, sim_iso: str, sim_date: str) -> bool:
@@ -998,8 +1003,18 @@ class Ticker:
                     loc_name = loc_obj.name if loc_obj is not None else "here"
                     turn_index = len(conversation.utterances)
                     mem = [t for t in _self._stm.get(speaker_id, [])]
+                    # Address the conversation partner by name (never "agent").
+                    partner_name = None
+                    for pid in conversation.participants:
+                        if pid == speaker_id:
+                            continue
+                        other = _self.world.agents.get(pid)
+                        if other is not None:
+                            partner_name = other.persona.name
+                            break
                     return local_utterance(persona.persona, loc_name,
-                                           turn_index, _sim, memory_lines=mem)
+                                           turn_index, _sim, memory_lines=mem,
+                                           partner_name=partner_name)
                 payload = {
                     "op": "utterance",
                     "simId": _self.world.config.simId,

@@ -7,6 +7,7 @@ import { Polyline, Marker } from 'react-leaflet'
 import L from 'leaflet'
 import type { LatLngExpression } from 'leaflet'
 import type { StateAgent, StateConversation } from '../types'
+import { isValidLatLon } from '../geo'
 
 interface ConversationIndicatorProps {
   conversation: StateConversation
@@ -36,6 +37,7 @@ export function ConversationIndicator({ conversation, agentsById }: Conversation
   const points: LatLngExpression[] = conversation.participants
     .map((id) => agentsById.get(id))
     .filter((a): a is StateAgent => Boolean(a))
+    .filter((a) => isValidLatLon(a.lat, a.lon))
     .map((a) => [a.lat, a.lon] as LatLngExpression)
 
   if (points.length < 2) return null
