@@ -4,7 +4,7 @@
 // most recent SimState; App holds the last-known state during pause / connection
 // loss (Req15.14 / Req15.11) so the map simply renders whatever it is given.
 
-import { MapContainer, TileLayer } from 'react-leaflet'
+import { MapContainer, TileLayer, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import type { LocationItem, SimState, StateAgent } from '../types'
 import { AgentMarker } from './AgentMarker'
@@ -23,6 +23,26 @@ interface MapViewProps {
   selectedLocationId: string | null
   onSelectAgent: (agentId: string) => void
   onSelectLocation: (locId: string) => void
+  /**
+   * When provided (i.e. "add event" mode is armed), a click anywhere on the map
+   * reports the clicked coordinate so the operator can place an event there.
+   * When undefined, clicks fall through to normal pan/marker behaviour.
+   */
+  onMapClick?: (latlng: { lat: number; lon: number }) => void
+}
+
+/**
+ * Invisible child of MapContainer that forwards map clicks to `onMapClick`.
+ * Rendered only while add-event mode is armed so ordinary panning and marker
+ * selection are unaffected the rest of the time.
+ */
+function MapClickCapture({ onMapClick }: { onMapClick: (latlng: { lat: number; lon: number }) => void }) {
+  useMapEvents({
+    click(e) {
+      onMapClick({ lat: e.latlng.lat, lon: e.latlng.lng })
+    },
+  })
+  return null
 }
 
 function isTravelling(agent: StateAgent): boolean {
@@ -37,13 +57,14 @@ export function MapView({
   selectedLocationId,
   onSelectAgent,
   onSelectLocation,
+  onMapClick,
 }: MapViewProps) {
   const agents = state?.agents ?? []
   const conversations = state?.conversations ?? []
   const agentsById = new Map(agents.map((a) => [a.id, a]))
 
   return (
-    <div className="map-wrap">
+    <div className={`map-wrap${onMapClick ? ' map-arm-add' : ''}`}>
       <MapContainer
         center={CENTER}
         zoom={13}
@@ -54,6 +75,8 @@ export function MapView({
         style={{ height: '100%', width: '100%' }}
         zoomControl
       >
+        {onMapClick && <MapClickCapture onMapClick={onMapClick} />}
+
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"

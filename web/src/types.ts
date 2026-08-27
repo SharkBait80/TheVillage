@@ -193,3 +193,43 @@ export interface LocationDetail extends LocationItem {
   status: LocationStatus
   presentAgents: { id: string; name: string }[]
 }
+
+/** Operator-authored event scale + severity (POST /events contract). */
+export type EventScale = 'local' | 'city' | 'wide'
+export type EventSeverity = 'info' | 'minor' | 'major' | 'severe'
+
+/**
+ * Request body for POST /v1/sim/{simId}/events — an operator-injected world
+ * event placed by clicking the map. `title`/`description` are validated
+ * (1..120 / 1..1000); `lat`/`lon` must fall within the Melbourne bounds.
+ */
+export interface CreateEventInput {
+  title: string
+  description: string
+  lat: number
+  lon: number
+  locationId?: string
+  scale?: EventScale
+  severity?: EventSeverity
+  radiusM?: number
+  simTime?: string
+}
+
+/**
+ * The content-moderation verdict the API returns for a submitted event. On a
+ * rejection (422) the same shape is carried in the error envelope's `data`.
+ */
+export interface EventVerdict {
+  plausible: boolean
+  relevant: boolean
+  toxic: boolean
+  reason: string
+}
+
+/** Successful result of POST /events (201): the accepted event + its verdict. */
+export interface CreateEventResult {
+  accepted: boolean
+  id: string
+  simTime: string
+  verdict: EventVerdict
+}

@@ -14,6 +14,8 @@ import type {
   ApiEnvelope,
   ControlCommand,
   ConversationItem,
+  CreateEventInput,
+  CreateEventResult,
   DecisionTrail,
   EventEntry,
   LocationDetail,
@@ -315,6 +317,26 @@ export async function control(command: ControlCommand, signal?: AbortSignal): Pr
   return request<{ status: SimStatus }>(
     simPath('/control'),
     { method: 'POST', body: JSON.stringify({ command }) },
+    signal,
+  )
+}
+
+/**
+ * Submit an operator-authored world event (R: click-to-add). The API runs a
+ * content-moderation pass and either accepts (201) or rejects it (422) with a
+ * verdict/reason. On rejection the envelope is `{ ok:false, error }`, so the
+ * shared request() helper throws ApiRequestError carrying the reason — callers
+ * surface `error.message` inline. Structural/out-of-bounds errors (400) throw
+ * the same way.
+ */
+export async function createEvent(
+  input: CreateEventInput,
+  signal?: AbortSignal,
+): Promise<CreateEventResult> {
+  if (MOCK) return mockBackend.createEvent(input)
+  return request<CreateEventResult>(
+    simPath('/events'),
+    { method: 'POST', body: JSON.stringify(input) },
     signal,
   )
 }

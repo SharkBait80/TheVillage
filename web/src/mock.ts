@@ -10,6 +10,8 @@ import type {
   AgentDetail,
   ControlCommand,
   ConversationItem,
+  CreateEventInput,
+  CreateEventResult,
   DecisionTrail,
   EventEntry,
   LatLon,
@@ -346,6 +348,20 @@ function presentAt(locId: string): { id: string; name: string }[] {
     .map((a) => ({ id: a.id, name: a.name }))
 }
 
+/** Nearest agent to a point (for attributing operator-injected events). */
+function nearestAgent(lat: number, lon: number): MockAgent | null {
+  let best: MockAgent | null = null
+  let bestD = Infinity
+  for (const a of agents) {
+    const d = haversineM(lat, lon, a.lat, a.lon)
+    if (d < bestD) {
+      bestD = d
+      best = a
+    }
+  }
+  return best
+}
+
 function haversineM(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371000
   const dLat = ((lat2 - lat1) * Math.PI) / 180
@@ -490,6 +506,71 @@ export const mockBackend = {
         break
     }
     return { status }
+  },
+
+  /**
+   * Simulate POST /events. Validates the Melbourne bounds + field lengths
+   * locally (mirroring the API's 400s) then runs a tiny content-moderation
+   * pass: descriptions containing an implausible marker ('dragon', 'unicorn',
+   * 'alien', 'zombie') are rejected as implausible; a banned/toxic marker
+   * ('slur', 'kill everyone') is rejected as toxic. Otherwise the event is
+   * accepted, pushed into the mock event/conversation stream so the world
+   * visibly reacts, and a positive verdict returned. Rejections throw an Error
+   * whose message the modal surfaces (matching ApiRequestError semantics).
+   */
+  async createEvent(input: CreateEventInput): Promise<CreateEventResult> {
+    const title = (input.title ?? '').trim()
+    const description = (input.description ?? '').trim()
+
+    // Structural validation (mirrors the API's 400 responses).
+    if (title.length < 1 || title.length > 120) {
+      throw new Error('Title must be between 1 and 120 characters.')
+    }
+    if (description.length < 1 || description.length > 1000) {
+      throw new Error('Description must be between 1 and 1000 characters.')
+    }
+    if (
+      typeof input.lat !== 'number' ||
+      typeof input.lon !== 'number' ||
+      Number.isNaN(input.lat) ||
+      Number.isNaN(input.lon) ||
+      input.lat < LAT_MIN ||
+      input.lat > LAT_MAX ||
+      input.lon < LON_MIN ||
+      input.lon > LON_MAX
+    ) {
+      throw new Error('Coordinates are outside the Melbourne map bounds.')
+    }
+
+    // Content moderation (mirrors the API's 422 rejections).
+    const lower = `${title} ${description}`.toLowerCase()
+    const TOXIC = ['slur', 'kill everyone']
+    const IMPLAUSIBLE = ['dragon', 'unicorn', 'alien', 'zombie']
+    const toxicHit = TOXIC.find((w) => lower.includes(w))
+    if (toxicHit) {
+      const reason = `Content flagged as toxic (matched "${toxicHit}").`
+      throw new Error(`Event rejected: ${reason}`)
+    }
+    const implausibleHit = IMPLAUSIBLE.find((w) => lower.includes(w))
+    if (implausibleHit) {
+      const reason = `Not plausible for Melbourne (mentions "${implausibleHit}").`
+      throw new Error(`Event rejected: ${reason}`)
+    }
+
+    // Accepted: record it against the nearest agent so detail panels + the
+    // event stream visibly react to the operator's injection.
+    const simTime = simTimeIso()
+    const nearest = nearestAgent(input.lat, input.lon)
+    const id = `mock-event-${seqCounter}`
+    if (nearest) {
+      pushEvent(nearest, 'operator', `Operator event near ${nearest.name}: ${title} — ${description}`)
+    }
+    return {
+      accepted: true,
+      id,
+      simTime,
+      verdict: { plausible: true, relevant: true, toxic: false, reason: 'ok' },
+    }
   },
 
   assetUrl(subjectId: string): string | null {

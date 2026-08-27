@@ -783,6 +783,123 @@ h3,
   color: var(--accent-strong);
 }
 
+/* ---- Add-event: armed map cursor + hint ---- */
+.map-arm-add,
+.map-arm-add .leaflet-container,
+.map-arm-add .leaflet-grab {
+  cursor: crosshair !important;
+}
+.map-hint {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-radius: var(--radius);
+  padding: 9px 16px;
+  font-weight: 600;
+  font-size: 13px;
+  box-shadow: var(--shadow);
+  z-index: 700;
+  max-width: calc(100% - 32px);
+  text-align: center;
+}
+
+/* ---- Add-event modal dialog ---- */
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.32);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1200;
+}
+.modal-dialog {
+  position: relative;
+  width: 100%;
+  max-width: 440px;
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 24px;
+  -webkit-overflow-scrolling: touch;
+}
+.modal-dialog h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.modal-dialog .subtitle {
+  color: var(--ink-soft);
+  font-size: 13px;
+  margin: 0 0 16px;
+  font-weight: 500;
+}
+.modal-form {
+  display: flex;
+  flex-direction: column;
+}
+.field-label {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  margin: 12px 0 5px;
+}
+.modal-textarea {
+  resize: vertical;
+  min-height: 84px;
+  line-height: 1.4;
+}
+.modal-row {
+  display: flex;
+  gap: 12px;
+}
+.modal-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.modal-coords {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.modal-coords .field-label {
+  margin: 0;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+.modal-success {
+  background: var(--ok-bg);
+  color: var(--ok-ink);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  text-align: center;
+}
+.modal-success-head {
+  font-weight: 700;
+  margin: 0 0 4px;
+}
+
 /* =====================================================================
    Responsive — tablets and phones
    ===================================================================== */

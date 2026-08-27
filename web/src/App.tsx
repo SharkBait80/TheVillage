@@ -26,6 +26,7 @@ import { LocationPanel } from './components/LocationPanel'
 import { ListView } from './components/ListView'
 import { ConnectionBanner } from './components/ConnectionBanner'
 import { ConversationsPanel } from './components/ConversationsPanel'
+import { AddEventModal } from './components/AddEventModal'
 import { LoginScreen } from './components/LoginScreen'
 
 type Selection =
@@ -90,6 +91,15 @@ function VillageApp() {
   const [selection, setSelection] = useState<Selection>(null)
   const [showList, setShowList] = useState(false)
   const [showConversations, setShowConversations] = useState(false)
+  // Operator "add event" flow: arm the mode, then a map click captures the
+  // coordinate and opens the modal (disarming the mode).
+  const [addEventArmed, setAddEventArmed] = useState(false)
+  const [addEventCoords, setAddEventCoords] = useState<{ lat: number; lon: number } | null>(null)
+
+  const handleMapClick = useCallback((latlng: { lat: number; lon: number }) => {
+    setAddEventCoords(latlng)
+    setAddEventArmed(false)
+  }, [])
 
   const status: SimStatus | null = conn.state?.status ?? null
   const paused = status === 'paused'
@@ -154,6 +164,13 @@ function VillageApp() {
         >
           {showConversations ? 'Close chats' : 'Conversations'}
         </button>
+        <button
+          className="btn btn-toggle"
+          aria-pressed={addEventArmed}
+          onClick={() => setAddEventArmed((v) => !v)}
+        >
+          Add event
+        </button>
         {config.mock && (
           <span className="hud-chip" aria-label="Running in mock mode">
             <span className="hud-label">Mode</span>
@@ -170,7 +187,14 @@ function VillageApp() {
           selectedLocationId={selection?.kind === 'location' ? selection.id : null}
           onSelectAgent={handleSelectAgent}
           onSelectLocation={handleSelectLocation}
+          onMapClick={addEventArmed ? handleMapClick : undefined}
         />
+
+        {addEventArmed && (
+          <div className="map-hint" role="status">
+            Click the map to place an event
+          </div>
+        )}
 
         {conn.connectionLost && <ConnectionBanner lastSimTime={conn.lastSimTime} />}
 
@@ -203,6 +227,14 @@ function VillageApp() {
             agentNames={Object.fromEntries(
               (conn.state?.agents ?? []).map((a) => [a.id, a.name]),
             )}
+          />
+        )}
+
+        {addEventCoords && (
+          <AddEventModal
+            lat={addEventCoords.lat}
+            lon={addEventCoords.lon}
+            onClose={() => setAddEventCoords(null)}
           />
         )}
       </main>
