@@ -154,7 +154,36 @@ export class VillageStack extends cdk.Stack {
       functionName: `village-assets-${simulationId}-${environment}`,
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '..', '..', 'assets')),
+      // Bundle the asset generator together with the seed data + persona
+      // generator so the `reseed` action can delete + re-seed the world with
+      // fresh, LLM-generated biographies and unique portraits.
+      code: lambda.Code.fromAsset(path.join(__dirname, '..', '..', 'assets'), {
+        bundling: {
+          image: lambda.Runtime.PYTHON_3_12.bundlingImage,
+          local: {
+            tryBundle(outputDir: string): boolean {
+              const assetsDir = path.join(__dirname, '..', '..', 'assets');
+              const seedDir = path.join(__dirname, '..', '..', 'seed');
+              cdk.FileSystem.copyDirectory(assetsDir, outputDir);
+              for (const f of ['locations.json', 'jobs.json', 'config.json', 'generate_personas.py']) {
+                fs.copyFileSync(path.join(seedDir, f), path.join(outputDir, f));
+              }
+              return true;
+            },
+          },
+          command: [
+            'bash', '-c',
+            'cp -r /asset-input/* /asset-output/ && ' +
+              'cp /seed/locations.json /seed/jobs.json /seed/config.json /seed/generate_personas.py /asset-output/',
+          ],
+          volumes: [
+            {
+              hostPath: path.join(__dirname, '..', '..', 'seed'),
+              containerPath: '/seed',
+            },
+          ],
+        },
+      }),
       timeout: cdk.Duration.minutes(15),
       memorySize: 1024,
       environment: {
@@ -163,6 +192,9 @@ export class VillageStack extends cdk.Stack {
         IMAGE_REGION,
         MODEL_ID: IMAGE_MODEL_ID,
         TABLE_REGION: region,
+        // In-region fast Claude model used to generate unique agent biographies
+        // and personalities during a reseed.
+        TEXT_MODEL_ID: HAIKU_PROFILE,
       },
     });
 
@@ -176,6 +208,22 @@ export class VillageStack extends cdk.Stack {
         effect: iam.Effect.ALLOW,
         actions: ['bedrock:InvokeModel'],
         resources: [`arn:aws:bedrock:${IMAGE_REGION}::foundation-model/${IMAGE_MODEL_ID}`],
+      })
+    );
+    // Bedrock: in-region Claude (text) for generating unique agent biographies
+    // + personalities during a reseed. Scoped to Anthropic foundation models +
+    // the au. inference profile in this region/account (no wildcards on region).
+    assetFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['bedrock:InvokeModel'],
+        resources: [
+          `arn:aws:bedrock:${region}::foundation-model/anthropic.*`,
+          `arn:aws:bedrock:${region}:${account}:inference-profile/au.anthropic.*`,
+          ...INFERENCE_MEMBER_REGIONS.map(
+            (r) => `arn:aws:bedrock:${r}::foundation-model/${HAIKU_FM}`
+          ),
+        ],
       })
     );
 

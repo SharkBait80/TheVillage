@@ -491,6 +491,15 @@ def handler(event, context=None):
             result = regenerate(sim_id, event.get("subjectId"))
             status = 200 if result.get("ok") else 400
             return _response(status, result)
+        if action == "reseed":
+            import reseed as reseed_mod
+            data = reseed_mod.reseed(
+                sim_id,
+                population=event.get("population"),
+                use_llm=event.get("useLlm", True),
+                generate_assets=event.get("generateAssets", True),
+            )
+            return _response(200, {"ok": True, "data": data})
         return _response(400, {"ok": False, "error": f"unknown action: {action}"})
     except Exception as exc:  # noqa: BLE001
         return _response(500, {"ok": False, "error": str(exc)})

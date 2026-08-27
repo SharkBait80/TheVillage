@@ -344,6 +344,39 @@ def test_control_writes_control_item(fake_table):
     assert body["data"]["status"]["status"] == "stopped"
 
 
+# --------------------------------------------------------------------------- #
+# RESEED (destructive delete + re-seed)
+# --------------------------------------------------------------------------- #
+
+def test_reseed_requires_confirmation(fake_table, fake_lambda):
+    ev = make_event("POST", "/v1/sim/melb/reseed", body={})
+    status, body = parse(index.handler(ev))
+    assert status == 400 and body["ok"] is False
+    # No async invoke happens without confirmation.
+    assert fake_lambda.invocations == []
+
+
+def test_reseed_confirmed_invokes_asset_lambda_async(fake_table, fake_lambda):
+    ev = make_event("POST", "/v1/sim/melb/reseed", body={"confirm": True})
+    status, body = parse(index.handler(ev))
+    assert status == 202 and body["ok"] is True
+    assert body["data"]["accepted"] is True
+    assert len(fake_lambda.invocations) == 1
+    inv = fake_lambda.invocations[0]
+    assert inv["FunctionName"] == "AssetGenFn"
+    assert inv["InvocationType"] == "Event"  # async
+    assert inv["Payload"]["action"] == "reseed"
+    assert inv["Payload"]["simId"] == "melb"
+
+
+def test_reseed_passes_optional_population(fake_table, fake_lambda):
+    ev = make_event("POST", "/v1/sim/melb/reseed",
+                    body={"confirm": True, "population": 30})
+    status, body = parse(index.handler(ev))
+    assert status == 202 and body["ok"] is True
+    assert fake_lambda.invocations[0]["Payload"]["population"] == 30
+
+
 def test_control_rejects_invalid_command(fake_table):
     seed_status(fake_table)
     ev = make_event("POST", "/v1/sim/melb/control", body={"command": "explode"})

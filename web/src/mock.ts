@@ -518,6 +518,18 @@ export const mockBackend = {
   },
 
   /**
+   * Simulate POST /reseed. Regenerates the mock population in place (fresh
+   * names, MBTI, bios) and resets the world to stopped, so the destructive
+   * action visibly takes effect in mock mode.
+   */
+  async reseed(): Promise<{ accepted: boolean }> {
+    const fresh = makeAgents(agents.length || AGENT_COUNT)
+    agents.splice(0, agents.length, ...fresh)
+    status = 'stopped'
+    return { accepted: true }
+  },
+
+  /**
    * Simulate POST /events. Validates the Melbourne bounds + field lengths
    * locally (mirroring the API's 400s) then runs a tiny content-moderation
    * pass: descriptions containing an implausible marker ('dragon', 'unicorn',

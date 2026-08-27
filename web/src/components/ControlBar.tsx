@@ -5,7 +5,7 @@
 // displayed status from polled state.
 
 import { useState } from 'react'
-import { control, ApiRequestError } from '../api'
+import { control, reseed, ApiRequestError } from '../api'
 import type { ControlCommand, SimStatus } from '../types'
 
 interface ControlBarProps {
@@ -40,6 +40,8 @@ const COMMANDS: { cmd: ControlCommand; label: string; cls: string }[] = [
 export function ControlBar({ status, onAccepted }: ControlBarProps) {
   const [busy, setBusy] = useState<ControlCommand | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  const [confirmReseed, setConfirmReseed] = useState(false)
+  const [reseeding, setReseeding] = useState(false)
 
   async function issue(cmd: ControlCommand) {
     setBusy(cmd)
@@ -60,6 +62,24 @@ export function ControlBar({ status, onAccepted }: ControlBarProps) {
     }
   }
 
+  async function doReseed() {
+    setReseeding(true)
+    setToast(null)
+    try {
+      await reseed()
+      setConfirmReseed(false)
+      setToast('World delete + re-seed started. Fresh agents will appear shortly.')
+    } catch (err) {
+      if (err instanceof ApiRequestError) {
+        setToast(err.message)
+      } else {
+        setToast((err as Error).message || 'Reseed failed')
+      }
+    } finally {
+      setReseeding(false)
+    }
+  }
+
   return (
     <>
       <div className="controls" role="group" aria-label="Simulation controls">
@@ -77,7 +97,51 @@ export function ControlBar({ status, onAccepted }: ControlBarProps) {
             </button>
           )
         })}
+        <button
+          className="btn btn-stop"
+          disabled={busy != null || reseeding}
+          aria-disabled={busy != null || reseeding}
+          onClick={() => setConfirmReseed(true)}
+          title="Delete the world and generate a fresh population"
+        >
+          Reseed
+        </button>
       </div>
+
+      {confirmReseed && (
+        <div
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="reseed-title"
+        >
+          <div className="modal-dialog">
+            <h3 id="reseed-title">Delete and re-seed the world?</h3>
+            <p className="subtitle">
+              This permanently deletes <strong>all</strong> current agents,
+              events, conversations and simulation state, then generates a brand
+              new population with freshly written biographies, personalities and
+              portraits. This cannot be undone.
+            </p>
+            <div className="controls" style={{ marginTop: 16 }}>
+              <button
+                className="btn"
+                disabled={reseeding}
+                onClick={() => setConfirmReseed(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-stop"
+                disabled={reseeding}
+                onClick={doReseed}
+              >
+                {reseeding ? 'Reseeding…' : 'Delete & re-seed'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {toast && (
         <div className="toast" role="alert">
           {toast}

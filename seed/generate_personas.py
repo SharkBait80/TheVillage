@@ -131,7 +131,8 @@ def _unique_full_name(rng: random.Random, first: list[str], last: list[str],
     return name
 
 
-def generate_personas(count: int, locations: list, seed: int = 42) -> list[dict]:
+def generate_personas(count: int, locations: list, seed: int = 42,
+                      enrich=None) -> list[dict]:
     """Generate ``count`` merged Persona + Agent_State agent dicts.
 
     Args:
@@ -205,6 +206,29 @@ def generate_personas(count: int, locations: list, seed: int = 42) -> list[dict]
         occ_lower = occupation.lower()
         background = rng.choice(BACKGROUND_TEMPLATES).format(occ_lower=occ_lower)
         background = background[:1000]  # clamp to 1..1000 chars
+        mbti = mbti_assignment[i]
+
+        # Optional LLM enrichment: when an `enrich` callable is supplied it may
+        # return a unique, in-character biography and personality traits for this
+        # agent. Any failure or missing field falls back to the deterministic
+        # template above so seeding never breaks (Req 4.1 length constraints are
+        # re-clamped defensively).
+        if enrich is not None:
+            try:
+                extra = enrich({
+                    "name": name, "age": age, "occupation": occupation,
+                    "mbti": mbti, "traits": traits,
+                }) or {}
+                bio = str(extra.get("background") or "").strip()
+                if bio:
+                    background = bio[:1000]
+                new_traits = extra.get("traits")
+                if isinstance(new_traits, list):
+                    cleaned = [str(t).strip()[:40] for t in new_traits if str(t).strip()]
+                    if 3 <= len(cleaned) <= 6:
+                        traits = cleaned
+            except Exception:  # noqa: BLE001 — enrichment must never break seeding
+                pass
 
         home = rng.choice(residences)
         home_id = home["id"]
@@ -245,7 +269,7 @@ def generate_personas(count: int, locations: list, seed: int = 42) -> list[dict]
                 "background": background,
                 "homeLocationId": home_id,
                 "wakeTime": wake_time,
-                "mbti": mbti_assignment[i],
+                "mbti": mbti,
             },
             "state": {
                 "lat": home_lat,

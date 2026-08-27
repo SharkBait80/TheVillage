@@ -309,6 +309,21 @@ export async function getDecisionTrail(
 }
 
 /**
+ * Delete + re-seed the world. Destructive: wipes all agents/events/state and
+ * regenerates a fresh population with LLM-generated biographies, personalities,
+ * and unique portraits. The API requires explicit confirmation, mirrored here.
+ * Returns 202 (async) — the new world appears once seeding completes.
+ */
+export async function reseed(signal?: AbortSignal): Promise<{ accepted: boolean }> {
+  if (MOCK) return mockBackend.reseed()
+  return request<{ accepted: boolean }>(
+    simPath('/reseed'),
+    { method: 'POST', body: JSON.stringify({ confirm: true }) },
+    signal,
+  )
+}
+
+/**
  * Issue a control command. On rejection the API returns { ok:false, error }
  * carrying the current status + message — surfaced as ApiRequestError (R15.12).
  */

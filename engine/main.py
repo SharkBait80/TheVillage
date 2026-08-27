@@ -208,12 +208,35 @@ def main() -> None:
     world = load_world(store, parser, sim_id)
     config = world.config
 
+    # Resume the simulated clock from the last persisted STATUS.simTime rather
+    # than always resetting to config.startSimTime. Without this, every engine
+    # restart / Fargate task replacement (e.g. a redeploy) snapped sim time back
+    # to the world's start, so the global clock appeared "stuck" near the start.
+    # We rehydrate the last known sim time (and status) so the clock advances
+    # continuously across process restarts.
+    persisted_status = store.get(sim_id, sk_status()) or {}
+    persisted_sim_time = persisted_status.get("simTime")
+    persisted_state = (persisted_status.get("status") or "").strip().lower()
+    start_sim_dt = localize(datetime.fromisoformat(config.startSimTime))
+    if persisted_sim_time:
+        try:
+            start_sim_dt = localize(datetime.fromisoformat(persisted_sim_time))
+        except (TypeError, ValueError):
+            start_sim_dt = localize(datetime.fromisoformat(config.startSimTime))
+
     clock = Simulation_Clock(
-        start_sim_time=localize(datetime.fromisoformat(config.startSimTime)),
+        start_sim_time=start_sim_dt,
         acceleration_factor=config.accelerationFactor,
         real_clock=time.monotonic,
     )
     controller = Simulation_Controller(config)
+    # If the world was RUNNING before this process (re)started, resume running
+    # so a redeploy doesn't silently freeze the world at its last tick.
+    if persisted_state == SimStatus.RUNNING.value:
+        try:
+            controller.apply("start", has_persisted_state=bool(world.agents))
+        except Exception:  # noqa: BLE001 — never block startup
+            pass
     budget = Budget_Accountant(config.budget)
     event_log = Event_Log(sink=DynamoEventSink(store, serializer), start_seq=0)
     runtime = BedrockAgentRuntimeClient(runtime_arn, region, budget) if runtime_arn else None

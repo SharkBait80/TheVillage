@@ -467,6 +467,7 @@ def _route_patterns():
         ("GET", re.compile(rf"^/v1/sim/{sim}/cost$"), _handle_cost),
         ("GET", re.compile(rf"^/v1/sim/{sim}/assets/(?P<subjectId>[^/]+)$"), _handle_asset_get),
         ("POST", re.compile(rf"^/v1/sim/{sim}/config$"), _handle_config),
+        ("POST", re.compile(rf"^/v1/sim/{sim}/reseed$"), _handle_reseed),
         ("POST", re.compile(rf"^/v1/sim/{sim}/assets/generate$"), _handle_asset_generate),
     ]
 
@@ -1217,6 +1218,47 @@ def _handle_config(event, sim_id, **_):
         "seedPending": True,
         "message": "config stored; population generation triggered via seedPending flag",
     })
+
+
+def _handle_reseed(event, sim_id, **_):
+    """POST /v1/sim/{simId}/reseed — DELETE + re-seed the world (destructive).
+
+    Requires an explicit confirmation flag in the body so the SPA's warning
+    prompt is honoured server-side too: body must contain {"confirm": true}.
+    Async-invokes the Asset_Generator's `reseed` action, which wipes the world,
+    regenerates personas with unique LLM-generated biographies + personalities,
+    and generates fresh unique portraits. Returns 202 accepted.
+    """
+    body = _body(event)
+    if body.get("confirm") is not True:
+        return _err(
+            400,
+            "reseed requires explicit confirmation",
+            {"data": {"accepted": False,
+                      "hint": "resend with {\"confirm\": true}"}},
+        )
+
+    payload = {"simId": sim_id, "action": "reseed"}
+    if isinstance(body.get("population"), int) and not isinstance(body.get("population"), bool):
+        payload["population"] = body["population"]
+    if body.get("useLlm") is False:
+        payload["useLlm"] = False
+
+    if not ASSET_FN_NAME:
+        return _err(503, "reseed is unavailable: asset generator not configured")
+    try:
+        _lambda().invoke(
+            FunctionName=ASSET_FN_NAME,
+            InvocationType="Event",  # async — reseed can take minutes
+            Payload=json.dumps(payload).encode("utf-8"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(502, f"could not invoke reseed: {exc}")
+    return _ok(
+        {"accepted": True, "mode": "async-invoke", "request": payload,
+         "message": "world delete + re-seed started; this may take a few minutes"},
+        status=202,
+    )
 
 
 def _handle_asset_generate(event, sim_id, **_):
