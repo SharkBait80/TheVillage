@@ -26,11 +26,14 @@ from .events_inject import (Event_Propagation, Injected_Event,
                             add_sim_minutes, AVOID_TTL_MIN, ATTRACT_TTL_MIN)
 from .heuristics import heuristic_decision, local_utterance
 from .law import Law_Enforcement_Engine
-from .models import (Action, ActionType, Agent, Config, EmploymentStatus, Job,
-                     LegalStatus, Location, SimStatus, TargetType)
+from .crime import CrimeValidationError
+from .models import (Action, ActionType, Agent, Config, CrimeType,
+                     EmploymentStatus, Job, LegalStatus, Location,
+                     LocationCategory, SimStatus, TargetType)
 from .movement import Movement_Engine, haversine_m
-from .needs import (apply_decay_tick, apply_energy_recovery_tick,
-                    update_critical_flags)
+from .needs import (CONVO_MIN_MINUTES, apply_decay_tick,
+                    apply_energy_recovery_tick, on_conversation_complete,
+                    on_eat_complete, on_leisure_complete, update_critical_flags)
 from .social import Social_Engine
 
 # Bounded concurrency for per-agent harness calls within a tick. Kept small to
@@ -303,11 +306,226 @@ class Ticker:
                     agent.state.lat = dest.lat
                     agent.state.lon = dest.lon
                     agent.state.presentLocationId = dest.id
+                self._on_action_complete(agent, act, tick)
                 agent.state.currentAction = None
         else:
             act.progress = min(1.0, act.progress + 1.0 / max(1, act.expectedDurationMin))
             if act.progress >= 1.0:
+                self._on_action_complete(agent, act, tick)
                 agent.state.currentAction = None
+
+    # -- action completion side-effects ------------------------------------
+    def _on_action_complete(self, agent: Agent, action: Action, tick: Tick) -> None:
+        """Apply the real economic / need / crime effects of a finished action.
+
+        Runs once, at the moment an action reaches progress>=1.0, BEFORE the
+        action is cleared. Every branch is defensive: an error resolving one
+        agent's action must never abort the tick for the rest of the world.
+
+        Wired behaviour (DESIGN §8 / Req 5, 9, 11, 12):
+          - work      -> credit wages for shift overlap; register attendance
+          - eat       -> +hunger recovery (food/home, >=15 min)
+          - leisure   -> +fun recovery (>=30 min)
+          - shop      -> debit purchase cost at the retail/food location
+          - commit_crime -> resolve crime, apply cash transfer + law enforcement
+        Travel/socialise/idle/sleep have no completion economics here (sleep
+        energy recovery is applied per-tick; social recovery is credited when a
+        conversation resolves in ``_run_conversations``).
+        """
+        try:
+            atype = action.type
+            if atype == ActionType.WORK:
+                self._complete_work(agent, action, tick)
+            elif atype == ActionType.EAT:
+                self._complete_eat(agent, action)
+            elif atype == ActionType.LEISURE:
+                self._complete_leisure(agent, action)
+            elif atype == ActionType.SHOP:
+                self._complete_shop(agent, action)
+            elif atype == ActionType.COMMIT_CRIME:
+                self._complete_crime(agent, action, tick)
+        except Exception as e:  # noqa: BLE001 — never abort a tick
+            print(f"[engine] action-complete error agent={agent.id} "
+                  f"type={getattr(action, 'type', '?')}: {e}", flush=True)
+
+    def _action_sim_iso(self, tick: Tick) -> str:
+        return tick.sim_time.replace(microsecond=0).isoformat()
+
+    def _job_for(self, agent: Agent) -> Optional[Job]:
+        jid = agent.state.jobId
+        if not jid:
+            return None
+        return self.world.jobs.get(jid)
+
+    def _take_open_job_here(self, agent: Agent, sim_iso: str) -> Optional[Job]:
+        """Let an unemployed agent take an unassigned job at their present
+        location by working there (Req 9.9). Returns the taken Job or None."""
+        if agent.state.employmentStatus == EmploymentStatus.EMPLOYED:
+            return None
+        loc_id = agent.state.presentLocationId
+        if not loc_id:
+            return None
+        for job in self.world.jobs.values():
+            if job.locationId != loc_id or job.assignedAgentId:
+                continue
+            if self.economy.take_job(agent, job):
+                self.event_log.append(
+                    sim_iso, "employment",
+                    f"{agent.id} took a job as {job.occupation}",
+                    agents=[agent.id],
+                    detail={"kind": "job-taken", "jobId": job.id,
+                            "occupation": job.occupation,
+                            "wagePerHour": job.wagePerHour})
+                self._remember(agent.id,
+                               f"{sim_iso}: started a new job as {job.occupation}")
+                return job
+        return None
+
+    def _complete_work(self, agent: Agent, action: Action, tick: Tick) -> None:
+        """Credit wages for the portion of a work action inside the shift, and
+        register shift attendance (missed-shift streak / auto-unemployment)."""
+        sim_iso = self._action_sim_iso(tick)
+        job = self._job_for(agent)
+        if job is None:
+            # Unemployed agent working at a location with an open job takes it
+            # (Req 9.9), then earns from this same shift.
+            job = self._take_open_job_here(agent, sim_iso)
+            if job is None:
+                return
+        work_location_id = action.targetId or agent.state.presentLocationId or ""
+        # Determine when the action started so we can compute shift overlap.
+        started = action.startedSimTime or sim_iso
+        try:
+            start_dt = datetime.fromisoformat(started)
+        except (TypeError, ValueError):
+            start_dt = tick.sim_time
+        overlap = self.economy.shift_overlap_minutes(
+            job, start_dt, action.expectedDurationMin)
+        # Attendance: present at the workplace counts as attending the shift.
+        workplace = self.world.locations.get(job.locationId)
+        attended = False
+        if workplace is not None:
+            attended = self.economy.attended_shift(agent.state, job, workplace)
+        became_unemployed = self.economy.register_shift_attendance(
+            agent, job, attended)
+        if became_unemployed:
+            self.event_log.append(
+                sim_iso, "employment",
+                f"{agent.id} lost their job after repeated missed shifts",
+                agents=[agent.id],
+                detail={"kind": "job-lost", "jobId": job.id})
+            return
+        wage = self.economy.credit_wage(
+            agent.state, job, work_location_id,
+            action.expectedDurationMin, overlap)
+        if wage.earned and wage.credited > 0:
+            self.event_log.append(
+                sim_iso, "employment",
+                f"{agent.id} earned {wage.credited:.2f} for a work shift",
+                agents=[agent.id],
+                detail={"kind": "wage-credited", "amount": wage.credited,
+                        "balance": wage.new_balance, "jobId": job.id,
+                        "shiftMinutes": overlap})
+            self._remember(agent.id,
+                           f"{sim_iso}: earned {wage.credited:.2f} at work")
+
+    def _complete_eat(self, agent: Agent, action: Action) -> None:
+        loc = self.world.locations.get(action.targetId
+                                       or agent.state.presentLocationId or "")
+        category = loc.category if loc is not None else LocationCategory.FOOD
+        is_home = (loc is not None
+                   and loc.id == agent.persona.homeLocationId)
+        on_eat_complete(agent.state, action.expectedDurationMin, category, is_home)
+
+    def _complete_leisure(self, agent: Agent, action: Action) -> None:
+        on_leisure_complete(agent.state, action.expectedDurationMin)
+
+    def _complete_shop(self, agent: Agent, action: Action) -> None:
+        """Debit the purchase cost of a completed shop/eat-out action."""
+        loc = self.world.locations.get(action.targetId
+                                       or agent.state.presentLocationId or "")
+        if loc is None:
+            return
+        result = self.economy.purchase(agent.state, loc)
+        sim_iso = action.startedSimTime or ""
+        if result.accepted and result.debited > 0:
+            self.event_log.append(
+                sim_iso or (agent.persistedSimTime or ""),
+                "economy",
+                f"{agent.id} spent {result.debited:.2f} at {loc.name}",
+                agents=[agent.id], location_id=loc.id,
+                detail={"kind": "purchase", "amount": result.debited,
+                        "balance": result.new_balance, "locationId": loc.id})
+
+    def _complete_crime(self, agent: Agent, action: Action, tick: Tick) -> None:
+        """Validate, resolve, and law-enforce a completed commit_crime action
+        (Req 11 / 12). Cash transfer, witnesses, detection, and the
+        suspected/charged/detained progression all run here."""
+        sim_iso = self._action_sim_iso(tick)
+        crime_type = action.crimeType
+        if crime_type is None:
+            return
+        target_type = action.targetType
+        target_id = action.targetId
+        # Resolve target position + optional target agent.
+        target_agent: Optional[Agent] = None
+        if target_type == TargetType.AGENT:
+            target_agent = self.world.agents.get(target_id)
+            if target_agent is None:
+                return
+            target_pos = (target_agent.state.lat, target_agent.state.lon)
+        else:
+            loc = self.world.locations.get(target_id)
+            if loc is None:
+                return
+            target_pos = (loc.lat, loc.lon)
+        try:
+            self.crime.validate(agent, crime_type, target_type, target_id,
+                                target_pos)
+        except CrimeValidationError as e:
+            self.event_log.append(
+                sim_iso, "crime",
+                f"{agent.id} crime attempt invalid ({e.check})",
+                agents=[agent.id],
+                detail={"kind": "crime-invalid", "check": e.check})
+            return
+        others = list(self.world.agents.values())
+        witnesses = self.crime.find_witnesses(agent, others, target_pos)
+        # Stolen amount: theft/burglary steal an amount bounded by the engine.
+        stolen = 0
+        if crime_type in (CrimeType.THEFT, CrimeType.BURGLARY):
+            if target_agent is not None:
+                stolen = int(max(1.0, min(500.0, target_agent.state.cash)))
+            else:
+                stolen = 100
+        resolution = self.crime.resolve(
+            agent, crime_type, target_type, target_id, tick.sim_time,
+            witnesses, stolen_amount=stolen, target_agent=target_agent)
+        crime_event = resolution.crime_event
+        self.event_log.append(
+            sim_iso, "crime",
+            f"{agent.id} attempted {crime_type.value} -> {crime_event.outcome.value}",
+            agents=[agent.id] + list(witnesses),
+            location_id=(target_id if target_type == TargetType.LOCATION else None),
+            detail={"kind": "crime-resolved",
+                    "crimeType": crime_type.value,
+                    "outcome": crime_event.outcome.value,
+                    "witnesses": list(witnesses),
+                    "stolenAmount": crime_event.stolenAmount,
+                    "cashDelta": resolution.cash_delta})
+        # Push crime memory to perpetrator, target, and witnesses (Req 11.4).
+        for rid in resolution.memory_recipients:
+            self._remember(rid,
+                           f"{sim_iso}: {agent.id} {crime_event.outcome.value} "
+                           f"a {crime_type.value}")
+        # Law enforcement: detection + suspected/charged/detained (Req 12).
+        if self.law is not None:
+            law_outcome = self.law.process_crime(agent, crime_event, tick.sim_time)
+            for desc in law_outcome.events:
+                self.event_log.append(
+                    sim_iso, "legal", desc, agents=[agent.id],
+                    detail={"kind": "law", "detection": law_outcome.detection.value,
+                            "status": agent.state.legalStatus.value})
 
     def _trigger_decision(self, agent: Agent, sim_iso: str) -> None:
         """Build full perception, call the harness, and apply the result.
@@ -839,6 +1057,25 @@ class Ticker:
                         "utteranceCount": outcome.utterance_count,
                     })
                 started += 1
+                # Credit social-need recovery once per conversation for each
+                # participant (Req 5.4). Idempotent via creditedConversations.
+                # A conversation only forms off a socialise action, so use that
+                # action's planned duration as the conversation length (minutes);
+                # fall back to the per-utterance minimum when unknown.
+                for pid in convo.participants:
+                    participant = self.world.agents.get(pid)
+                    if participant is None:
+                        continue
+                    pact = participant.state.currentAction
+                    if (pact is not None
+                            and pact.type == ActionType.SOCIALISE
+                            and pact.expectedDurationMin > 0):
+                        convo_minutes = pact.expectedDurationMin
+                    else:
+                        convo_minutes = max(len(convo.utterances),
+                                            outcome.utterance_count, CONVO_MIN_MINUTES)
+                    on_conversation_complete(
+                        participant.state, convo.id, convo_minutes)
                 # Mirror a compact conversation summary into each participant's
                 # short-term memory for behavioural continuity.
                 snippet = "; ".join(
