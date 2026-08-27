@@ -9,6 +9,8 @@ import type {
   AgentAction,
   AgentDetail,
   ControlCommand,
+  ConversationItem,
+  DecisionTrail,
   EventEntry,
   LatLon,
   LocationCategory,
@@ -18,6 +20,7 @@ import type {
   SimStatus,
   StateAgent,
   StateConversation,
+  Utterance,
 } from './types'
 
 // Melbourne map bounds (Req15.1 / Req3.3).
@@ -195,6 +198,42 @@ for (const a of agents) {
 let conversationActive = true
 let conversationEndsAtMin = 6 // ends a bit after start to exercise removal (R15.5)
 
+// Rolling store of resolved conversation transcripts (most-recent first) so the
+// Conversations panel has content in mock mode.
+const conversationLog: ConversationItem[] = []
+let convSeq = 1000
+
+const SAMPLE_LINES: [string, string][] = [
+  ['Morning! You grabbing a coffee too?', 'Always — the Carlton roast is unbeatable today.'],
+  ['Did you see the markets are packed?', 'Saturday crowd! I got the last of the good tomatoes.'],
+  ['How was your shift at the studio?', 'Long, but we wrapped the edit. Relieved.'],
+  ['Fancy a walk through the gardens later?', 'Yes please, I need the fresh air after all that screen time.'],
+]
+
+function recordConversation(a: MockAgent, b: MockAgent): void {
+  const pick = SAMPLE_LINES[Math.floor(rnd() * SAMPLE_LINES.length)]
+  const utterances: Utterance[] = [
+    { speaker: a.id, text: pick[0] },
+    { speaker: b.id, text: pick[1] },
+    { speaker: a.id, text: 'Catch you later then!' },
+  ]
+  conversationLog.unshift({
+    id: `mock-convo-${convSeq}`,
+    seq: convSeq++,
+    simTime: simTimeIso(),
+    locationId: a.action.targetId ?? 'loc_fed_square',
+    participants: [a.id, b.id],
+    utterances,
+    truncated: false,
+    utteranceCount: utterances.length,
+  })
+  if (conversationLog.length > 30) conversationLog.pop()
+}
+
+// Seed one resolved conversation so the Conversations panel has content on load
+// (placed AFTER recordConversation + its const deps to avoid a TDZ error).
+recordConversation(agents[0], agents[4])
+
 /** Advance the mock world. Called lazily on each getState() while running. */
 function advance() {
   if (status !== 'running') {
@@ -250,6 +289,7 @@ function advance() {
   if (conversationActive && simEpochMin >= conversationEndsAtMin) {
     conversationActive = false
     pushEvent(talkerA, 'conversation', `${talkerA.name} and ${talkerB.name} finished chatting.`)
+    recordConversation(talkerA, talkerB)
     // Rekindle a new conversation later so the feature stays demonstrable.
     setTimeout(() => {
       conversationActive = true
@@ -381,6 +421,45 @@ export const mockBackend = {
     const l = LOCATIONS.find((x) => x.id === locId)
     if (!l) throw new Error('location not found')
     return { ...l, status: locationStatus(l), presentAgents: presentAt(l.id) }
+  },
+
+  async getConversations(agentId?: string): Promise<ConversationItem[]> {
+    advance()
+    const all = conversationLog.slice()
+    return agentId ? all.filter((c) => c.participants.includes(agentId)) : all
+  },
+
+  async getConversation(convId: string): Promise<ConversationItem> {
+    const c = conversationLog.find((x) => x.id === convId)
+    if (!c) throw new Error('conversation not found')
+    return c
+  },
+
+  async getDecisionTrail(_seq: number): Promise<DecisionTrail | null> {
+    // Synthesize a plausible thought-process for the demo. In mock mode the
+    // AgentPanel passes the selected agent's latest action seq; we ignore it and
+    // return a representative trail so the UI section is exercised.
+    const a = agents[Math.floor(rnd() * agents.length)]
+    return {
+      actionEventSeq: _seq,
+      simTime: simTimeIso(),
+      reasoning: `My ${a.action.type} felt right — social battery is fine and I want to make the most of the afternoon in the village.`,
+      perceptionInput: {
+        simTime: simTimeIso(),
+        locationId: a.action.targetId ?? null,
+        needs: {
+          hunger: Math.round(a.needs.hunger),
+          energy: Math.round(a.needs.energy),
+          social: Math.round(a.needs.social),
+          fun: Math.round(a.needs.fun),
+        },
+        cash: a.cash,
+        legalStatus: a.legal,
+        employmentStatus: a.employment,
+      },
+      retrievedMemoryIds: [101, 102],
+      action: a.action,
+    }
   },
 
   async control(command: ControlCommand): Promise<{ status: SimStatus }> {

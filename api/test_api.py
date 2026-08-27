@@ -476,6 +476,103 @@ def test_decision_trail_bad_seq(fake_table):
     assert status == 400 and body["ok"] is False
 
 
+def test_decision_trail_includes_reasoning(fake_table):
+    seed_status(fake_table)
+    seed_event(fake_table, seq=8, category="action",
+               detail={"kind": "accepted",
+                       "reasoning": "I was hungry so I chose to eat",
+                       "perceptionInput": {"needs": {"hunger": 20}, "locationId": "loc_fed"},
+                       "action": {"type": "eat"}})
+    ev = make_event("GET", "/v1/sim/melb/events/decision-trail",
+                    query={"actionEventSeq": "8"})
+    status, body = parse(index.handler(ev))
+    assert status == 200
+    assert body["data"]["reasoning"] == "I was hungry so I chose to eat"
+    assert body["data"]["perceptionInput"]["locationId"] == "loc_fed"
+
+
+# --------------------------------------------------------------------------- #
+# CONVERSATIONS (agent-to-agent transcripts)
+# --------------------------------------------------------------------------- #
+
+def _seed_conversation(t, seq, sim_time, conv_id, participants, utterances,
+                       location_id="loc_fed"):
+    seed_event(
+        t, seq=seq, category="conversation", sim_time=sim_time,
+        agents=participants, location_id=location_id,
+        description=f"conversation-ended at {location_id}",
+        detail={
+            "kind": "conversation-ended",
+            "conversationId": conv_id,
+            "participants": participants,
+            "locationId": location_id,
+            "utterances": utterances,
+            "truncated": False,
+            "utteranceCount": len(utterances),
+        })
+
+
+def test_conversations_list_returns_transcripts(fake_table):
+    seed_status(fake_table)
+    _seed_conversation(
+        fake_table, seq=10, sim_time="2026-03-02T09:05:00+11:00",
+        conv_id="c1", participants=["agent_01", "agent_02"],
+        utterances=[{"speaker": "agent_01", "text": "Morning!"},
+                    {"speaker": "agent_02", "text": "Hey there!"}])
+    ev = make_event("GET", "/v1/sim/melb/conversations")
+    status, body = parse(index.handler(ev))
+    assert status == 200
+    convos = body["data"]["conversations"]
+    assert len(convos) == 1
+    c = convos[0]
+    assert c["id"] == "c1"
+    assert set(c["participants"]) == {"agent_01", "agent_02"}
+    assert c["utterances"][0] == {"speaker": "agent_01", "text": "Morning!"}
+    assert c["utteranceCount"] == 2
+
+
+def test_conversations_list_empty_is_ok(fake_table):
+    seed_status(fake_table)
+    ev = make_event("GET", "/v1/sim/melb/conversations")
+    status, body = parse(index.handler(ev))
+    assert status == 200
+    assert body["data"]["conversations"] == []
+
+
+def test_conversations_filter_by_agent(fake_table):
+    seed_status(fake_table)
+    _seed_conversation(fake_table, seq=11, sim_time="2026-03-02T09:05:00+11:00",
+                       conv_id="c1", participants=["agent_01", "agent_02"],
+                       utterances=[{"speaker": "agent_01", "text": "hi"},
+                                   {"speaker": "agent_02", "text": "yo"}])
+    ev = make_event("GET", "/v1/sim/melb/conversations",
+                    query={"agentId": "agent_01"})
+    status, body = parse(index.handler(ev))
+    assert status == 200
+    assert len(body["data"]["conversations"]) == 1
+
+
+def test_conversation_detail_by_id(fake_table):
+    seed_status(fake_table)
+    _seed_conversation(fake_table, seq=12, sim_time="2026-03-02T09:05:00+11:00",
+                       conv_id="c-detail", participants=["agent_03", "agent_04"],
+                       utterances=[{"speaker": "agent_03", "text": "one"},
+                                   {"speaker": "agent_04", "text": "two"}])
+    ev = make_event("GET", "/v1/sim/melb/conversations/c-detail")
+    status, body = parse(index.handler(ev))
+    assert status == 200
+    assert body["data"]["id"] == "c-detail"
+    assert len(body["data"]["utterances"]) == 2
+
+
+def test_conversation_detail_unknown_404(fake_table):
+    seed_status(fake_table)
+    ev = make_event("GET", "/v1/sim/melb/conversations/nope")
+    status, body = parse(index.handler(ev))
+    assert status == 404 and body["ok"] is False
+
+
+
 # --------------------------------------------------------------------------- #
 # SUMMARY (Req 14.9)
 # --------------------------------------------------------------------------- #

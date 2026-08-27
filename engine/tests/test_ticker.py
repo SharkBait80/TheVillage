@@ -134,3 +134,126 @@ def test_day_rollover_applies_living_cost():
         ticker.advance_once()
     # living cost debited on rollover
     assert agent.state.cash == cash_before - 40.0
+
+
+# ---------------------------------------------------------------------------
+# Thought-process (reasoning + perception) and conversation persistence
+# ---------------------------------------------------------------------------
+
+class ReasoningRuntime:
+    """Decision returns an action + reasoning; utterance returns canned text."""
+    def __init__(self, action_type="idle", reasoning="because I am tired"):
+        self.action_type = action_type
+        self.reasoning = reasoning
+        self.utterance_calls = 0
+
+    def decision(self, request):
+        return {
+            "action": {"type": self.action_type, "targetType": "location",
+                       "targetId": request["state"]["presentLocationId"],
+                       "expectedDurationMin": 5},
+            "reasoning": self.reasoning,
+        }
+
+    def plan(self, request):
+        return {"plan": []}
+
+    def reflect(self, request):
+        return {"reflections": []}
+
+    def utterance(self, request):
+        self.utterance_calls += 1
+        who = request.get("agentId", "?")
+        return {"utterance": f"hello from {who}"}
+
+
+def _socialise_action(target_id):
+    from village.models import Action, ActionType, TargetType
+    return Action(type=ActionType.SOCIALISE, targetType=TargetType.AGENT,
+                  targetId=target_id, expectedDurationMin=10,
+                  startedSimTime="2026-03-02T06:00:00+11:00")
+
+
+def test_decision_event_carries_reasoning_and_perception():
+    world = make_world()
+    fake = FakeClock()
+    clock = Simulation_Clock(
+        localize(datetime.fromisoformat("2026-03-02T06:00:00")),
+        acceleration_factor=60, real_clock=fake)
+    controller = Simulation_Controller(world.config)
+    controller.start()
+    budget = Budget_Accountant(world.config.budget)
+    log = Event_Log()
+    runtime = ReasoningRuntime(reasoning="need to rest")
+    ticker = Ticker(world=world, clock=clock, controller=controller,
+                    runtime=runtime, event_log=log, budget=budget)
+    fake.tick(1.0)
+    ticker.advance_once()
+
+    action_events = [e for e in log.query(category="action").entries
+                     if (e.detail or {}).get("kind") == "accepted"]
+    assert action_events, "expected an accepted action event"
+    detail = action_events[-1].detail
+    assert detail["reasoning"] == "need to rest"
+    assert detail["perceptionInput"]["locationId"] == "loc_home"
+    assert "needs" in detail["perceptionInput"]
+    # decision_trail should surface the reasoning too
+    trail = log.decision_trail(action_events[-1].seq)
+    assert trail is not None
+    assert trail["reasoning"] == "need to rest"
+
+
+def _two_agent_socialising_world():
+    home = Location(id="loc_home", name="Home", category=LocationCategory.RESIDENCE,
+                    lat=-37.81, lon=144.95, capacity=5,
+                    hours=[OpeningHours("00:00", "23:59")] * 7)
+    config = Config(simId="melb", accelerationFactor=60,
+                    detentionFacilityId="loc_remand",
+                    budget=Budget(prices={OPUS: ModelPrice(0.015, 0.075),
+                                          HAIKU: ModelPrice(0.0008, 0.004)}))
+
+    def mk(agent_id, name):
+        state = AgentState(lat=-37.81, lon=144.95, presentLocationId="loc_home",
+                           needs={"hunger": 70, "energy": 70, "social": 70, "fun": 70},
+                           cash=100.0, employmentStatus=EmploymentStatus.EMPLOYED,
+                           legalStatus=LegalStatus.CLEAR, dailyLivingCost=40.0)
+        persona = Persona(name=name, age=30, occupation="Barista",
+                          traits=["warm"], background="b", homeLocationId="loc_home")
+        return Agent(id=agent_id, persona=persona, state=state)
+
+    a1 = mk("agent_01", "Aroha")
+    a2 = mk("agent_02", "Marco")
+    a1.state.currentAction = _socialise_action("agent_02")
+    a2.state.currentAction = _socialise_action("agent_01")
+    return WorldState(config=config,
+                      agents={"agent_01": a1, "agent_02": a2},
+                      locations={"loc_home": home})
+
+
+def test_conversation_is_run_and_persisted_with_utterances():
+    world = _two_agent_socialising_world()
+    fake = FakeClock()
+    clock = Simulation_Clock(
+        localize(datetime.fromisoformat("2026-03-02T06:00:00")),
+        acceleration_factor=60, real_clock=fake)
+    controller = Simulation_Controller(world.config)
+    controller.start()
+    budget = Budget_Accountant(world.config.budget)
+    log = Event_Log()
+    runtime = ReasoningRuntime()
+    ticker = Ticker(world=world, clock=clock, controller=controller,
+                    runtime=runtime, event_log=log, budget=budget)
+
+    fake.tick(1.0)
+    ticker.advance_once()
+
+    convos = log.query(category="conversation").entries
+    assert convos, "expected a conversation event to be persisted"
+    detail = convos[-1].detail
+    assert detail["kind"] == "conversation-ended"
+    assert set(detail["participants"]) == {"agent_01", "agent_02"}
+    assert len(detail["utterances"]) >= 2
+    # utterances carry speaker + text
+    first = detail["utterances"][0]
+    assert "speaker" in first and "text" in first
+    assert runtime.utterance_calls >= 2

@@ -11,7 +11,7 @@ The engine (already built, 129 tests passing) calls
 payload=json.dumps(req))` with the request `req` documented in DESIGN §6 and
 validates the response per Requirement 6.5. Response shapes MUST match exactly:
 
-  op=decision  -> {"action":{"type","targetType","targetId","expectedDurationMin","crimeType"?}}
+  op=decision  -> {"action":{"type","targetType","targetId","expectedDurationMin","crimeType"?},"reasoning":"<=280 chars"}
   op=plan       -> {"plan":[{"type","targetType","targetId"} x3..12]}
   op=reflect    -> {"reflections":[{"text","sourceMemoryIds":[..1..20]} x1..5]}
   op=utterance  -> {"utterance":"<=500 chars"}
@@ -352,7 +352,8 @@ def build_decision_prompt(payload: Dict[str, Any]) -> Tuple[str, str]:
         "You MUST reply with ONLY a single JSON object and no other text, in the form:\n"
         '{"action":{"type":"<one of sleep|eat|work|travel|socialise|shop|leisure|'
         'commit_crime|idle>","targetType":"<location|agent>","targetId":"<id>",'
-        '"expectedDurationMin":<integer 1-600>,"crimeType":"<theft|burglary|vandalism|fraud>"}}\n'
+        '"expectedDurationMin":<integer 1-600>,"crimeType":"<theft|burglary|vandalism|fraud>"},'
+        '"reasoning":"<one short sentence, <=280 chars, explaining WHY you chose this>"}\n'
         "Rules: targetId MUST be your current location, one of the reachable locations, "
         "or one of the co-located agents. Only include \"crimeType\" when type is "
         "\"commit_crime\". If detained you may only sleep/eat/socialise/idle. "
@@ -529,6 +530,24 @@ def coerce_action(obj: Optional[Dict[str, Any]], payload: Dict[str, Any]) -> Dic
             crime = "theft"
         result["crimeType"] = crime
     return result
+
+
+REASONING_MAX_CHARS = 280
+
+
+def coerce_reasoning(obj: Optional[Dict[str, Any]]) -> str:
+    """Extract a short, sanitized reasoning string from a parsed decision object.
+
+    Tolerates {"reasoning": "..."} at the top level; returns "" when absent or
+    not a usable string. Trims to REASONING_MAX_CHARS (Req: human-readable
+    thought process for the SPA).
+    """
+    if not isinstance(obj, dict):
+        return ""
+    r = obj.get("reasoning")
+    if not isinstance(r, str):
+        return ""
+    return r.strip()[:REASONING_MAX_CHARS]
 
 
 def coerce_plan(obj: Optional[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
@@ -748,6 +767,7 @@ def handle_decision(payload: Dict[str, Any], bedrock=None, memory_client=None,
         REASONING_MODEL, system, user, MAX_TOKENS["decision"],
         bedrock=bedrock, sleep=sleep, rng=rng)
     action = coerce_action(parsed, enriched)
+    reasoning = coerce_reasoning(parsed)
 
     # Persist the decision as a short-term event (durable store).
     memory_write_event(
@@ -758,6 +778,7 @@ def handle_decision(payload: Dict[str, Any], bedrock=None, memory_client=None,
 
     resp: Dict[str, Any] = {
         "action": action,
+        "reasoning": reasoning,
         "tokenUsage": _token_usage(REASONING_MODEL, "decision_cycle", in_tok, out_tok),
     }
     if mem.degraded:

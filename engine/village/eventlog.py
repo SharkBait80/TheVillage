@@ -129,6 +129,7 @@ class Event_Log:
                     "perceptionInput": detail.get("perceptionInput"),
                     "retrievedMemoryIds": detail.get("retrievedMemoryIds", []),
                     "action": detail.get("action"),
+                    "reasoning": detail.get("reasoning", ""),
                 }
         return None
 

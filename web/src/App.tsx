@@ -25,6 +25,7 @@ import { AgentPanel } from './components/AgentPanel'
 import { LocationPanel } from './components/LocationPanel'
 import { ListView } from './components/ListView'
 import { ConnectionBanner } from './components/ConnectionBanner'
+import { ConversationsPanel } from './components/ConversationsPanel'
 import { LoginScreen } from './components/LoginScreen'
 
 type Selection =
@@ -88,6 +89,7 @@ function VillageApp() {
   const [locations, setLocations] = useState<LocationItem[]>([])
   const [selection, setSelection] = useState<Selection>(null)
   const [showList, setShowList] = useState(false)
+  const [showConversations, setShowConversations] = useState(false)
 
   const status: SimStatus | null = conn.state?.status ?? null
   const paused = status === 'paused'
@@ -145,6 +147,13 @@ function VillageApp() {
         >
           {showList ? '🗺 Map view' : '📋 List view'}
         </button>
+        <button
+          className="btn btn-toggle"
+          aria-pressed={showConversations}
+          onClick={() => setShowConversations((v) => !v)}
+        >
+          {showConversations ? '✖ Close chats' : '💬 Conversations'}
+        </button>
         {config.mock && (
           <span className="hud-chip" aria-label="Running in mock mode">
             <span className="hud-label">Mode</span>
@@ -182,6 +191,18 @@ function VillageApp() {
             locationId={selection.id}
             onClose={clearSelection}
             onSelectAgent={handleSelectAgent}
+          />
+        )}
+
+        {showConversations && (
+          <ConversationsPanel
+            onClose={() => setShowConversations(false)}
+            onSelectAgent={(id) => {
+              handleSelectAgent(id)
+            }}
+            agentNames={Object.fromEntries(
+              (conn.state?.agents ?? []).map((a) => [a.id, a.name]),
+            )}
           />
         )}
       </main>

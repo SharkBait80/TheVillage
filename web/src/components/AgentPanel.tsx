@@ -4,10 +4,10 @@
 // open so the panel stays live.
 
 import { useEffect, useRef, useState } from 'react'
-import { getAgent } from '../api'
+import { getAgent, getDecisionTrail } from '../api'
 import { agentPlaceholder } from '../placeholders'
 import { useAuthImage } from '../useAuthImage'
-import type { AgentDetail, NeedLevels } from '../types'
+import type { AgentDetail, DecisionTrail, NeedLevels } from '../types'
 
 interface AgentPanelProps {
   agentId: string
@@ -46,6 +46,7 @@ function actionText(detail: AgentDetail): string {
 
 export function AgentPanel({ agentId, onClose }: AgentPanelProps) {
   const [detail, setDetail] = useState<AgentDetail | null>(null)
+  const [trail, setTrail] = useState<DecisionTrail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
 
@@ -78,6 +79,32 @@ export function AgentPanel({ agentId, onClose }: AgentPanelProps) {
   useEffect(() => {
     panelRef.current?.focus()
   }, [agentId])
+
+  // Fetch the "thought process" (decision trail) for the agent's most recent
+  // decision (action) event. In mock mode the seq is synthetic; live mode uses
+  // the latest action event's seq from recentEvents.
+  useEffect(() => {
+    const actionEvents = (detail?.recentEvents ?? []).filter((e) => e.category === 'action')
+    if (actionEvents.length === 0) {
+      setTrail(null)
+      return
+    }
+    const latestSeq = actionEvents.reduce((m, e) => (e.seq > m ? e.seq : m), actionEvents[0].seq)
+    let active = true
+    const ac = new AbortController()
+    void (async () => {
+      try {
+        const t = await getDecisionTrail(latestSeq, ac.signal)
+        if (active) setTrail(t)
+      } catch {
+        if (active) setTrail(null)
+      }
+    })()
+    return () => {
+      active = false
+      ac.abort()
+    }
+  }, [agentId, detail?.recentEvents])
 
   const portrait = useAuthImage(agentId, agentPlaceholder())
 
@@ -173,6 +200,41 @@ export function AgentPanel({ agentId, onClose }: AgentPanelProps) {
             <span className="k">Current action</span>
             <span className="v">{actionText(detail)}</span>
           </div>
+
+          <div className="section-title">Thought process</div>
+          {trail && (trail.reasoning || trail.perceptionInput) ? (
+            <div className="thought">
+              {trail.reasoning ? (
+                <p className="thought-reasoning">“{trail.reasoning}”</p>
+              ) : (
+                <p className="thought-reasoning muted">No reasoning recorded for the latest decision.</p>
+              )}
+              {trail.perceptionInput && (
+                <div className="thought-perception" aria-label="What the agent perceived">
+                  <span className="thought-label">Perceived when deciding:</span>
+                  <ul>
+                    {trail.perceptionInput.locationId && (
+                      <li>Location: {trail.perceptionInput.locationId}</li>
+                    )}
+                    {trail.perceptionInput.needs && (
+                      <li>
+                        Needs —{' '}
+                        {(['hunger', 'energy', 'social', 'fun'] as const)
+                          .filter((k) => trail.perceptionInput?.needs?.[k] != null)
+                          .map((k) => `${k} ${trail.perceptionInput!.needs![k]}`)
+                          .join(', ')}
+                      </li>
+                    )}
+                    {typeof trail.perceptionInput.cash === 'number' && (
+                      <li>Cash: ${trail.perceptionInput.cash.toFixed(2)}</li>
+                    )}
+                  </ul>
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="muted">No decision recorded yet.</p>
+          )}
 
           <div className="section-title">Recent events</div>
           {detail.recentEvents.length === 0 ? (

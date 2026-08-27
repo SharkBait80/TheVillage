@@ -13,6 +13,8 @@ import type {
   AgentDetail,
   ApiEnvelope,
   ControlCommand,
+  ConversationItem,
+  DecisionTrail,
   EventEntry,
   LocationDetail,
   LocationItem,
@@ -247,6 +249,60 @@ export async function getLocation(locId: string, signal?: AbortSignal): Promise<
     ...raw,
     hours: Array.isArray(raw.hours) ? raw.hours : [],
     presentAgents: Array.isArray(raw.presentAgents) ? raw.presentAgents : [],
+  }
+}
+
+/**
+ * Recent agent-to-agent conversations (transcripts). The endpoint wraps the
+ * array as { conversations:[...] } (like /locations), so we unwrap it here.
+ * Optional `agentId` filters to conversations a given agent took part in.
+ */
+export async function getConversations(
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<ConversationItem[]> {
+  if (MOCK) return mockBackend.getConversations(agentId)
+  const qs = agentId ? `?agentId=${encodeURIComponent(agentId)}` : ''
+  const data = await request<{ conversations?: ConversationItem[] } | ConversationItem[]>(
+    simPath(`/conversations${qs}`),
+    { method: 'GET' },
+    signal,
+  )
+  if (Array.isArray(data)) return data
+  return Array.isArray(data?.conversations) ? data.conversations : []
+}
+
+/** A single conversation transcript by id. */
+export async function getConversation(
+  convId: string,
+  signal?: AbortSignal,
+): Promise<ConversationItem> {
+  if (MOCK) return mockBackend.getConversation(convId)
+  return request<ConversationItem>(
+    simPath(`/conversations/${encodeURIComponent(convId)}`),
+    { method: 'GET' },
+    signal,
+  )
+}
+
+/**
+ * The decision "thought process" for a given action event (by seq): the LLM's
+ * reasoning plus the perception snapshot. Returns null when no trail exists.
+ */
+export async function getDecisionTrail(
+  actionEventSeq: number,
+  signal?: AbortSignal,
+): Promise<DecisionTrail | null> {
+  if (MOCK) return mockBackend.getDecisionTrail(actionEventSeq)
+  try {
+    return await request<DecisionTrail>(
+      simPath(`/events/decision-trail?actionEventSeq=${encodeURIComponent(String(actionEventSeq))}`),
+      { method: 'GET' },
+      signal,
+    )
+  } catch {
+    // 404 (no trail) is a normal, non-fatal outcome.
+    return null
   }
 }
 

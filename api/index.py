@@ -431,6 +431,8 @@ def _route_patterns():
         ("GET", re.compile(rf"^/v1/sim/{sim}/locations/(?P<locId>[^/]+)$"), _handle_location_detail),
         ("GET", re.compile(rf"^/v1/sim/{sim}/events/decision-trail$"), _handle_decision_trail),
         ("GET", re.compile(rf"^/v1/sim/{sim}/events$"), _handle_events),
+        ("GET", re.compile(rf"^/v1/sim/{sim}/conversations/(?P<convId>[^/]+)$"), _handle_conversation_detail),
+        ("GET", re.compile(rf"^/v1/sim/{sim}/conversations$"), _handle_conversations),
         ("GET", re.compile(rf"^/v1/sim/{sim}/cost$"), _handle_cost),
         ("GET", re.compile(rf"^/v1/sim/{sim}/assets/(?P<subjectId>[^/]+)$"), _handle_asset_get),
         ("POST", re.compile(rf"^/v1/sim/{sim}/config$"), _handle_config),
@@ -675,6 +677,75 @@ def _handle_events(event, sim_id, **_):
     })
 
 
+def _conversation_view(e: dict) -> dict:
+    """Shape a persisted `conversation` event into an SPA-facing transcript."""
+    detail = e.get("detail") or {}
+    utterances = detail.get("utterances") or []
+    return {
+        "id": detail.get("conversationId") or f"seq-{e.get('seq')}",
+        "seq": int(e["seq"]) if e.get("seq") is not None else None,
+        "simTime": e.get("simTime"),
+        "locationId": detail.get("locationId") or e.get("locationId"),
+        "participants": detail.get("participants") or e.get("agents") or [],
+        "utterances": [
+            {"speaker": u.get("speaker"), "text": u.get("text")}
+            for u in utterances if isinstance(u, dict)
+        ],
+        "truncated": bool(detail.get("truncated", False)),
+        "utteranceCount": int(detail.get("utteranceCount") or len(utterances)),
+    }
+
+
+def _handle_conversations(event, sim_id, **_):
+    """GET /v1/sim/{simId}/conversations — recent agent-to-agent conversations.
+
+    Filters (optional): agentId (a participant), fromSimTime, toSimTime, cursor.
+    Returns up to MAX_EVENTS conversation transcripts (participants + utterance
+    text), most recent first, plus a `more`/`nextCursor` for pagination. Empty
+    result (not an error) when none match.
+    """
+    q = _query(event)
+    agent_id = q.get("agentId")
+    from_st = q.get("fromSimTime")
+    to_st = q.get("toSimTime")
+    try:
+        cursor = int(q.get("cursor") or 0)
+    except (TypeError, ValueError):
+        cursor = 0
+    cursor = max(0, cursor)
+
+    entries = _load_events(sim_id, category="conversation", agent_id=agent_id,
+                           from_st=from_st, to_st=to_st)
+    # Only fully-resolved conversations carry a transcript.
+    entries = [e for e in entries
+               if (e.get("detail") or {}).get("kind") == "conversation-ended"]
+    # Most recent first.
+    entries.sort(key=lambda e: (e.get("simTime") or "", int(e.get("seq") or 0)),
+                 reverse=True)
+
+    window = entries[cursor:cursor + MAX_EVENTS]
+    more = len(entries) > cursor + MAX_EVENTS
+    return _ok({
+        "conversations": [_conversation_view(e) for e in window],
+        "more": more,
+        "nextCursor": (cursor + MAX_EVENTS) if more else None,
+        "count": len(window),
+    })
+
+
+def _handle_conversation_detail(event, sim_id, convId=None, **_):
+    """GET /v1/sim/{simId}/conversations/{convId} — a single transcript."""
+    entries = _load_events(sim_id, category="conversation")
+    for e in entries:
+        detail = e.get("detail") or {}
+        if detail.get("kind") != "conversation-ended":
+            continue
+        cid = detail.get("conversationId") or f"seq-{e.get('seq')}"
+        if cid == convId:
+            return _ok(_conversation_view(e))
+    return _err(404, f"unknown conversation '{convId}'")
+
+
 def _handle_decision_trail(event, sim_id, **_):
     """GET /v1/sim/{simId}/events/decision-trail?actionEventSeq= (Req 14.4/14.5)."""
     q = _query(event)
@@ -697,6 +768,7 @@ def _handle_decision_trail(event, sim_id, **_):
         "perceptionInput": detail.get("perceptionInput"),
         "retrievedMemoryIds": detail.get("retrievedMemoryIds", []),
         "action": detail.get("action"),
+        "reasoning": detail.get("reasoning", ""),
     })
 
 

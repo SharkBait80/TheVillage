@@ -77,6 +77,45 @@ export interface StateConversation {
   locationId: string
 }
 
+/** A single spoken line in a conversation transcript. */
+export interface Utterance {
+  speaker: string
+  text: string
+}
+
+/** A resolved agent-to-agent conversation from GET /conversations. */
+export interface ConversationItem {
+  id: string
+  seq: number
+  simTime: string
+  locationId: string | null
+  participants: string[]
+  utterances: Utterance[]
+  truncated: boolean
+  utteranceCount: number
+}
+
+/**
+ * An agent's decision "thought process" from GET /events/decision-trail.
+ * `reasoning` is the LLM's short natural-language justification; perceptionInput
+ * is a snapshot of what the agent perceived when it decided.
+ */
+export interface DecisionTrail {
+  actionEventSeq: number
+  simTime: string
+  perceptionInput: {
+    simTime?: string
+    locationId?: string | null
+    needs?: Partial<Record<'hunger' | 'energy' | 'social' | 'fun', number>>
+    cash?: number
+    legalStatus?: LegalStatus
+    employmentStatus?: EmploymentStatus
+  } | null
+  retrievedMemoryIds: (string | number)[]
+  action: AgentAction | null
+  reasoning: string
+}
+
 /** GET /v1/sim/{simId}/state response payload (§5). */
 export interface SimState {
   simTime: string

@@ -198,6 +198,11 @@ class Ticker:
                     for desc in ac.events:
                         self.event_log.append(sim_iso, "legal", desc, agents=[agent.id])
 
+        # 5b. run & resolve co-located conversations (Req 10). Utterance text
+        # is produced by the harness; the full transcript is persisted so the
+        # SPA can display agent-to-agent conversations.
+        self._run_conversations(sim_iso)
+
         # 6. persist changed agents
         persisted = 0
         for agent in self.world.agents.values():
@@ -262,11 +267,140 @@ class Ticker:
         if action_dict:
             action_dict.setdefault("startedSimTime", sim_iso)
             agent.state.currentAction = Action.from_dict(action_dict)
+            # Capture a compact, human-readable "thought process": the LLM's
+            # reasoning plus a snapshot of what the agent perceived when it
+            # decided. This feeds the decision-trail API + the SPA (Req 14.4).
+            reasoning = resp.get("reasoning") or ""
+            st = agent.state
+            perception = {
+                "simTime": sim_iso,
+                "locationId": st.presentLocationId,
+                "needs": dict(st.needs) if st.needs else {},
+                "cash": float(st.cash),
+                "legalStatus": st.legalStatus.value,
+                "employmentStatus": st.employmentStatus.value,
+            }
             self.event_log.append(
                 sim_iso, "action",
                 f"{agent.id} -> {action_dict.get('type')}",
                 agents=[agent.id],
-                detail={"kind": "accepted", "action": action_dict})
+                detail={
+                    "kind": "accepted",
+                    "action": action_dict,
+                    "reasoning": reasoning,
+                    "perceptionInput": perception,
+                })
+
+    def _run_conversations(self, sim_iso: str) -> int:
+        """Form, run, and resolve conversations among co-located socialisers.
+
+        For each not-yet-conversing agent whose current action is
+        socialise -> <agent>, attempt to form a conversation with co-located
+        participants, drive utterances via the harness, resolve relationship
+        effects, and append a `conversation` event carrying the full transcript
+        (participants + utterances) so the SPA can render it. Returns the number
+        of conversations that produced a persisted transcript.
+
+        Budget/availability: only runs when a runtime is present and the budget
+        allows a decision-class invocation; utterance failures truncate the
+        conversation gracefully (Req 10.8).
+        """
+        if self.runtime is None:
+            return 0
+
+        # Index agents by their current location for co-location checks.
+        by_location: Dict[str, List[Agent]] = {}
+        for agent in self.world.agents.values():
+            loc = agent.state.presentLocationId
+            if loc:
+                by_location.setdefault(loc, []).append(agent)
+
+        in_conversation: set[str] = set()
+        started = 0
+        convo_counter = 0
+
+        for agent in self.world.agents.values():
+            act = agent.state.currentAction
+            if act is None or act.type != ActionType.SOCIALISE:
+                continue
+            if agent.id in in_conversation:
+                continue
+            loc = agent.state.presentLocationId
+            if not loc:
+                continue
+            colocated = [a for a in by_location.get(loc, []) if a.id != agent.id]
+            if not colocated:
+                continue
+            if not self.budget.can_start_decision():
+                break
+
+            convo_counter += 1
+            convo_id = f"convo-{sim_iso}-{agent.id}-{convo_counter}"
+            convo, _declined = self.social.match_conversation(
+                initiator=agent, colocated=colocated,
+                in_conversation=in_conversation, conversation_id=convo_id,
+                location_id=loc)
+            if convo is None:
+                continue
+
+            # Mark participants as busy so they aren't double-matched this tick.
+            for pid in convo.participants:
+                in_conversation.add(pid)
+
+            def utterance_provider(conversation, speaker_id, _self=self, _sim=sim_iso):
+                payload = {
+                    "op": "utterance",
+                    "simId": _self.world.config.simId,
+                    "agentId": speaker_id,
+                    "simTime": _sim,
+                    "conversation": {
+                        "id": conversation.id,
+                        "participants": conversation.participants,
+                        "locationId": conversation.location_id,
+                        "utterancesSoFar": [
+                            {"speaker": u.speaker, "text": u.text}
+                            for u in conversation.utterances
+                        ],
+                    },
+                }
+                persona = _self.world.agents.get(speaker_id)
+                if persona is not None:
+                    payload["persona"] = persona.persona.to_dict()
+                resp = _self.runtime.utterance(payload)
+                if not isinstance(resp, dict):
+                    return None
+                text = resp.get("utterance")
+                return text if isinstance(text, str) and text.strip() else None
+
+            try:
+                self.social.run_conversation(convo, utterance_provider)
+            except Exception:
+                convo.truncated = True
+
+            outcome = self.social.resolve(convo)
+
+            # Only persist conversations that actually exchanged utterances.
+            if len(convo.utterances) >= 1:
+                self.event_log.append(
+                    sim_iso, "conversation",
+                    f"conversation-ended at {loc} ({len(convo.utterances)} lines)",
+                    agents=list(convo.participants),
+                    location_id=loc,
+                    detail={
+                        "kind": "conversation-ended",
+                        "conversationId": convo.id,
+                        "participants": list(convo.participants),
+                        "locationId": loc,
+                        "utterances": [
+                            {"speaker": u.speaker, "text": u.text}
+                            for u in convo.utterances
+                        ],
+                        "truncated": convo.truncated,
+                        "utteranceCount": outcome.utterance_count,
+                    })
+                started += 1
+
+        return started
 
 
 __all__ = ["Ticker", "WorldState", "TickReport", "AgentRuntimeClient"]
