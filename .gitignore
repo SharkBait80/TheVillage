@@ -1,0 +1,22 @@
+# Dependencies
+**/node_modules/
+
+# Build / synth output
+web/dist/
+infra/cdk.out/
+infra/dist/
+
+# Python caches
+**/__pycache__/
+*.pyc
+
+# TypeScript incremental build info
+**/*.tsbuildinfo
+
+# Local env / secrets (do NOT commit credentials)
+web/.env.local
+web/.env.production
+
+# OS / editor
+.DS_Store
+*.log

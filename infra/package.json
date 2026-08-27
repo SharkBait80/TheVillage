@@ -1,0 +1,25 @@
+{
+  "name": "village-infra",
+  "version": "0.1.0",
+  "description": "Melbourne Agent Village - AWS CDK infrastructure",
+  "bin": {
+    "village-infra": "bin/village.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "synth": "cdk synth",
+    "cdk": "cdk"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "typescript": "5.7.2",
+    "ts-node": "10.9.2",
+    "aws-cdk": "2.174.1"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.174.1",
+    "constructs": "10.4.2",
+    "source-map-support": "0.5.21"
+  }
+}

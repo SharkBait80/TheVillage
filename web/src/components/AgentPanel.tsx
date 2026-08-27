@@ -1,0 +1,194 @@
+// AgentPanel — full agent detail (Req15.6): persona, 4 need bars, cash,
+// employment, legal, current action, and the 10 most recent event-log entries.
+// Fetches GET /v1/sim/{simId}/agents/{agentId} on selection and refreshes while
+// open so the panel stays live.
+
+import { useEffect, useRef, useState } from 'react'
+import { getAgent } from '../api'
+import { agentPlaceholder } from '../placeholders'
+import { useAuthImage } from '../useAuthImage'
+import type { AgentDetail, NeedLevels } from '../types'
+
+interface AgentPanelProps {
+  agentId: string
+  onClose: () => void
+}
+
+const NEED_ORDER: (keyof NeedLevels)[] = ['hunger', 'energy', 'social', 'fun']
+const NEED_LABEL: Record<keyof NeedLevels, string> = {
+  hunger: 'Hunger',
+  energy: 'Energy',
+  social: 'Social',
+  fun: 'Fun',
+}
+
+function formatEventTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString('en-AU', {
+      hour: '2-digit',
+      minute: '2-digit',
+      day: '2-digit',
+      month: 'short',
+      timeZone: 'Australia/Melbourne',
+    })
+  } catch {
+    return iso
+  }
+}
+
+function actionText(detail: AgentDetail): string {
+  const a = detail.currentAction
+  if (!a) return 'Idle (no current action)'
+  const target = a.targetId ? ` → ${a.targetId}` : ''
+  const dur = a.expectedDurationMin ? ` (~${a.expectedDurationMin} min)` : ''
+  return `${a.type}${target}${dur}`
+}
+
+export function AgentPanel({ agentId, onClose }: AgentPanelProps) {
+  const [detail, setDetail] = useState<AgentDetail | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    let active = true
+    const ac = new AbortController()
+    async function load() {
+      try {
+        const d = await getAgent(agentId, ac.signal)
+        if (active) {
+          setDetail(d)
+          setError(null)
+        }
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') return
+        if (active) setError((err as Error).message || 'Failed to load agent')
+      }
+    }
+    void load()
+    // Refresh while open (same cadence as map, R15.6 live view).
+    const timer = window.setInterval(load, 2000)
+    return () => {
+      active = false
+      ac.abort()
+      clearInterval(timer)
+    }
+  }, [agentId])
+
+  // Move focus into the panel for keyboard users (WCAG 2.1 AA).
+  useEffect(() => {
+    panelRef.current?.focus()
+  }, [agentId])
+
+  const portrait = useAuthImage(agentId, agentPlaceholder())
+
+  return (
+    <aside
+      className="panel"
+      role="dialog"
+      aria-label="Agent details"
+      tabIndex={-1}
+      ref={panelRef}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') onClose()
+      }}
+    >
+      <button className="panel-close" onClick={onClose} aria-label="Close agent details">
+        ×
+      </button>
+
+      {error && <p role="alert">{error}</p>}
+      {!detail && !error && <p>Loading agent…</p>}
+
+      {detail && (
+        <>
+          <img
+            className="panel-portrait"
+            src={portrait.src}
+            width={72}
+            height={72}
+            alt={`Portrait of ${detail.persona.name}`}
+            onError={(e) => {
+              const img = e.currentTarget
+              img.onerror = null
+              img.src = agentPlaceholder()
+            }}
+          />
+          <h2>{detail.persona.name}</h2>
+          <p className="subtitle">
+            {detail.persona.age} · {detail.persona.occupation}
+          </p>
+          <div style={{ clear: 'both' }} />
+
+          <div>
+            {detail.persona.traits.map((t) => (
+              <span className="tag" key={t}>
+                {t}
+              </span>
+            ))}
+          </div>
+
+          <p style={{ marginTop: 10 }}>{detail.persona.background}</p>
+
+          <div className="section-title">Needs</div>
+          {NEED_ORDER.map((key) => {
+            const value = detail.needs[key]
+            const critical = detail.critical?.[key]
+            return (
+              <div className={`need need-${key} ${critical ? 'critical' : ''}`} key={key}>
+                <div className="need-row">
+                  <span>
+                    {NEED_LABEL[key]}
+                    {critical ? ' ⚠ critical' : ''}
+                  </span>
+                  <span>{value}/100</span>
+                </div>
+                <div
+                  className="need-track"
+                  role="progressbar"
+                  aria-valuenow={value}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label={`${NEED_LABEL[key]} level`}
+                >
+                  <div className="need-fill" style={{ width: `${value}%` }} />
+                </div>
+              </div>
+            )
+          })}
+
+          <div className="section-title">Status</div>
+          <div className="kv">
+            <span className="k">Cash</span>
+            <span className="v">${detail.cash.toFixed(2)} AUD</span>
+          </div>
+          <div className="kv">
+            <span className="k">Employment</span>
+            <span className="v">{detail.employmentStatus}</span>
+          </div>
+          <div className="kv">
+            <span className="k">Legal</span>
+            <span className="v">{detail.legalStatus}</span>
+          </div>
+          <div className="kv">
+            <span className="k">Current action</span>
+            <span className="v">{actionText(detail)}</span>
+          </div>
+
+          <div className="section-title">Recent events</div>
+          {detail.recentEvents.length === 0 ? (
+            <p>No events yet.</p>
+          ) : (
+            <ul className="event-list">
+              {detail.recentEvents.slice(0, 10).map((ev) => (
+                <li className="event-item" key={ev.seq}>
+                  <div className="event-time">{formatEventTime(ev.simTime)}</div>
+                  {ev.description}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </aside>
+  )
+}

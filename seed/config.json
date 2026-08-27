@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "simId": "melb",
+  "status": "stopped",
+  "accelerationFactor": 4,
+  "startSimTime": "2026-03-02T06:00:00+11:00",
+  "timezone": "Australia/Melbourne",
+  "detentionFacilityId": "loc_remand",
+  "artStyleClause": "soft pastel storybook illustration, warm cozy Melbourne, gentle watercolour, rounded shapes, charming, high detail",
+  "decayRates": {"hunger": 6, "energy": 4, "social": 3, "fun": 4},
+  "energyRecoveryRate": 12,
+  "initialNeeds": {"hunger": 70, "energy": 70, "social": 70, "fun": 70},
+  "budget": {
+    "maxInvocationsPerSimHour": 5000,
+    "maxSpendUSD": 25.00,
+    "prices": {
+      "au.anthropic.claude-opus-5": {"per1kInput": 0.015, "per1kOutput": 0.075, "note": "estimate; Bedrock Sydney (ap-southeast-2) pricing not confirmed"},
+      "au.anthropic.claude-haiku-4-5-20251001-v1:0": {"per1kInput": 0.001, "per1kOutput": 0.005, "note": "estimate; Bedrock Sydney (ap-southeast-2) pricing not confirmed"}
+    }
+  },
+  "population": 25
+}

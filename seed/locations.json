@@ -1,0 +1,901 @@
+{
+  "schemaVersion": 1,
+  "locations": [
+    {
+      "schemaVersion": 1,
+      "id": "loc_carlton_apartments",
+      "name": "Carlton Terrace Apartments",
+      "category": "residence",
+      "lat": -37.798869,
+      "lon": 144.967190,
+      "capacity": 120,
+      "hours": [
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_fitzroy_terraces",
+      "name": "Fitzroy Brunswick St Terraces",
+      "category": "residence",
+      "lat": -37.798100,
+      "lon": 144.978600,
+      "capacity": 90,
+      "hours": [
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_southbank_towers",
+      "name": "Southbank Riverside Towers",
+      "category": "residence",
+      "lat": -37.822900,
+      "lon": 144.964400,
+      "capacity": 200,
+      "hours": [
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_docklands_apartments",
+      "name": "Docklands Waterfront Apartments",
+      "category": "residence",
+      "lat": -37.815300,
+      "lon": 144.945800,
+      "capacity": 180,
+      "hours": [
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_north_melbourne_homes",
+      "name": "North Melbourne Errol St Homes",
+      "category": "residence",
+      "lat": -37.799500,
+      "lon": 144.945000,
+      "capacity": 80,
+      "hours": [
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_east_melbourne_residences",
+      "name": "East Melbourne Powlett St Residences",
+      "category": "residence",
+      "lat": -37.812200,
+      "lon": 144.984700,
+      "capacity": 70,
+      "hours": [
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_collingwood_lofts",
+      "name": "Collingwood Smith St Lofts",
+      "category": "residence",
+      "lat": -37.802400,
+      "lon": 144.984300,
+      "capacity": 100,
+      "hours": [
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_parkville_student_village",
+      "name": "Parkville Student Village",
+      "category": "residence",
+      "lat": -37.793800,
+      "lon": 144.951200,
+      "capacity": 150,
+      "hours": [
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_qv_market",
+      "name": "Queen Victoria Market",
+      "category": "workplace",
+      "lat": -37.807594,
+      "lon": 144.956650,
+      "capacity": 3000,
+      "hours": [
+        {"open": "00:00", "close": "00:00"},
+        {"open": "06:00", "close": "15:00"},
+        {"open": "06:00", "close": "15:00"},
+        {"open": "06:00", "close": "15:00"},
+        {"open": "06:00", "close": "17:00"},
+        {"open": "06:00", "close": "16:00"},
+        {"open": "09:00", "close": "16:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_rmh_hospital",
+      "name": "Royal Melbourne Hospital",
+      "category": "workplace",
+      "lat": -37.799200,
+      "lon": 144.955900,
+      "capacity": 2500,
+      "hours": [
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_unimelb",
+      "name": "University of Melbourne Parkville",
+      "category": "workplace",
+      "lat": -37.796950,
+      "lon": 144.961580,
+      "capacity": 5000,
+      "hours": [
+        {"open": "08:00", "close": "21:00"},
+        {"open": "08:00", "close": "21:00"},
+        {"open": "08:00", "close": "21:00"},
+        {"open": "08:00", "close": "21:00"},
+        {"open": "08:00", "close": "21:00"},
+        {"open": "09:00", "close": "17:00"},
+        {"open": "00:00", "close": "00:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_rialto_towers",
+      "name": "Rialto Towers Offices",
+      "category": "workplace",
+      "lat": -37.819000,
+      "lon": 144.957200,
+      "capacity": 4000,
+      "hours": [
+        {"open": "07:00", "close": "19:00"},
+        {"open": "07:00", "close": "19:00"},
+        {"open": "07:00", "close": "19:00"},
+        {"open": "07:00", "close": "19:00"},
+        {"open": "07:00", "close": "19:00"},
+        {"open": "00:00", "close": "00:00"},
+        {"open": "00:00", "close": "00:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_collins_st_offices",
+      "name": "101 Collins Street Offices",
+      "category": "workplace",
+      "lat": -37.815300,
+      "lon": 144.966200,
+      "capacity": 3500,
+      "hours": [
+        {"open": "07:00", "close": "19:00"},
+        {"open": "07:00", "close": "19:00"},
+        {"open": "07:00", "close": "19:00"},
+        {"open": "07:00", "close": "19:00"},
+        {"open": "07:00", "close": "19:00"},
+        {"open": "00:00", "close": "00:00"},
+        {"open": "00:00", "close": "00:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_docklands_studios",
+      "name": "Docklands Media Studios",
+      "category": "workplace",
+      "lat": -37.813400,
+      "lon": 144.939900,
+      "capacity": 800,
+      "hours": [
+        {"open": "08:00", "close": "18:00"},
+        {"open": "08:00", "close": "18:00"},
+        {"open": "08:00", "close": "18:00"},
+        {"open": "08:00", "close": "18:00"},
+        {"open": "08:00", "close": "18:00"},
+        {"open": "09:00", "close": "14:00"},
+        {"open": "00:00", "close": "00:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_lygon_cafe",
+      "name": "Tiamo Cafe Lygon Street",
+      "category": "food",
+      "lat": -37.799700,
+      "lon": 144.967000,
+      "capacity": 60,
+      "price": 18.50,
+      "hours": [
+        {"open": "07:00", "close": "22:00"},
+        {"open": "07:00", "close": "22:00"},
+        {"open": "07:00", "close": "22:00"},
+        {"open": "07:00", "close": "22:00"},
+        {"open": "07:00", "close": "23:00"},
+        {"open": "08:00", "close": "23:00"},
+        {"open": "08:00", "close": "22:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_hardware_lane_bistro",
+      "name": "Hardware Lane Bistro",
+      "category": "food",
+      "lat": -37.814600,
+      "lon": 144.961300,
+      "capacity": 80,
+      "price": 32.00,
+      "hours": [
+        {"open": "07:30", "close": "22:00"},
+        {"open": "07:30", "close": "22:00"},
+        {"open": "07:30", "close": "22:00"},
+        {"open": "07:30", "close": "22:00"},
+        {"open": "07:30", "close": "23:00"},
+        {"open": "09:00", "close": "23:00"},
+        {"open": "09:00", "close": "16:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_degraves_espresso",
+      "name": "Degraves Street Espresso Bar",
+      "category": "food",
+      "lat": -37.816500,
+      "lon": 144.965300,
+      "capacity": 45,
+      "price": 14.90,
+      "hours": [
+        {"open": "07:00", "close": "18:00"},
+        {"open": "07:00", "close": "18:00"},
+        {"open": "07:00", "close": "18:00"},
+        {"open": "07:00", "close": "18:00"},
+        {"open": "07:00", "close": "19:00"},
+        {"open": "08:00", "close": "18:00"},
+        {"open": "08:00", "close": "17:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_chinatown_dumplings",
+      "name": "Chinatown Dumpling House",
+      "category": "food",
+      "lat": -37.811500,
+      "lon": 144.968900,
+      "capacity": 100,
+      "price": 24.00,
+      "hours": [
+        {"open": "11:00", "close": "22:30"},
+        {"open": "11:00", "close": "22:30"},
+        {"open": "11:00", "close": "22:30"},
+        {"open": "11:00", "close": "22:30"},
+        {"open": "11:00", "close": "23:30"},
+        {"open": "11:00", "close": "23:30"},
+        {"open": "11:00", "close": "22:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_southbank_restaurant",
+      "name": "Southbank Promenade Restaurant",
+      "category": "food",
+      "lat": -37.820700,
+      "lon": 144.964000,
+      "capacity": 120,
+      "price": 45.00,
+      "hours": [
+        {"open": "11:00", "close": "23:00"},
+        {"open": "11:00", "close": "23:00"},
+        {"open": "11:00", "close": "23:00"},
+        {"open": "11:00", "close": "23:00"},
+        {"open": "11:00", "close": "23:59"},
+        {"open": "10:00", "close": "23:59"},
+        {"open": "10:00", "close": "22:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_brunswick_st_diner",
+      "name": "Brunswick Street Diner",
+      "category": "food",
+      "lat": -37.797200,
+      "lon": 144.978700,
+      "capacity": 55,
+      "price": 21.00,
+      "hours": [
+        {"open": "08:00", "close": "22:00"},
+        {"open": "08:00", "close": "22:00"},
+        {"open": "08:00", "close": "22:00"},
+        {"open": "08:00", "close": "22:00"},
+        {"open": "08:00", "close": "23:00"},
+        {"open": "08:00", "close": "23:00"},
+        {"open": "08:00", "close": "21:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_bourke_st_mall",
+      "name": "Bourke Street Mall",
+      "category": "retail",
+      "lat": -37.813700,
+      "lon": 144.964600,
+      "capacity": 2000,
+      "price": 55.00,
+      "hours": [
+        {"open": "09:00", "close": "18:00"},
+        {"open": "09:00", "close": "18:00"},
+        {"open": "09:00", "close": "18:00"},
+        {"open": "09:00", "close": "21:00"},
+        {"open": "09:00", "close": "21:00"},
+        {"open": "09:00", "close": "18:00"},
+        {"open": "10:00", "close": "17:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_melbourne_central",
+      "name": "Melbourne Central Shopping Centre",
+      "category": "retail",
+      "lat": -37.810200,
+      "lon": 144.962800,
+      "capacity": 2500,
+      "price": 48.00,
+      "hours": [
+        {"open": "10:00", "close": "19:00"},
+        {"open": "10:00", "close": "19:00"},
+        {"open": "10:00", "close": "19:00"},
+        {"open": "10:00", "close": "21:00"},
+        {"open": "10:00", "close": "21:00"},
+        {"open": "10:00", "close": "19:00"},
+        {"open": "10:00", "close": "19:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_qv_retail",
+      "name": "QV Melbourne",
+      "category": "retail",
+      "lat": -37.810800,
+      "lon": 144.965900,
+      "capacity": 1500,
+      "price": 39.90,
+      "hours": [
+        {"open": "10:00", "close": "19:00"},
+        {"open": "10:00", "close": "19:00"},
+        {"open": "10:00", "close": "19:00"},
+        {"open": "10:00", "close": "21:00"},
+        {"open": "10:00", "close": "21:00"},
+        {"open": "10:00", "close": "19:00"},
+        {"open": "10:00", "close": "18:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_emporium",
+      "name": "Emporium Melbourne",
+      "category": "retail",
+      "lat": -37.812000,
+      "lon": 144.963700,
+      "capacity": 2200,
+      "price": 65.00,
+      "hours": [
+        {"open": "10:00", "close": "19:00"},
+        {"open": "10:00", "close": "19:00"},
+        {"open": "10:00", "close": "19:00"},
+        {"open": "10:00", "close": "21:00"},
+        {"open": "10:00", "close": "21:00"},
+        {"open": "10:00", "close": "19:00"},
+        {"open": "10:00", "close": "19:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_fed_square",
+      "name": "Federation Square",
+      "category": "leisure",
+      "lat": -37.817979,
+      "lon": 144.968480,
+      "capacity": 2000,
+      "hours": [
+        {"open": "08:00", "close": "23:00"},
+        {"open": "08:00", "close": "23:00"},
+        {"open": "08:00", "close": "23:00"},
+        {"open": "08:00", "close": "23:00"},
+        {"open": "08:00", "close": "23:59"},
+        {"open": "08:00", "close": "23:59"},
+        {"open": "08:00", "close": "23:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_mcg",
+      "name": "Melbourne Cricket Ground",
+      "category": "leisure",
+      "lat": -37.819967,
+      "lon": 144.983398,
+      "capacity": 5000,
+      "hours": [
+        {"open": "09:00", "close": "22:00"},
+        {"open": "09:00", "close": "22:00"},
+        {"open": "09:00", "close": "22:00"},
+        {"open": "09:00", "close": "22:00"},
+        {"open": "09:00", "close": "23:00"},
+        {"open": "09:00", "close": "23:00"},
+        {"open": "09:00", "close": "22:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_botanic_gardens",
+      "name": "Royal Botanic Gardens Victoria",
+      "category": "leisure",
+      "lat": -37.830300,
+      "lon": 144.979700,
+      "capacity": 3000,
+      "hours": [
+        {"open": "07:30", "close": "20:00"},
+        {"open": "07:30", "close": "20:00"},
+        {"open": "07:30", "close": "20:00"},
+        {"open": "07:30", "close": "20:00"},
+        {"open": "07:30", "close": "20:00"},
+        {"open": "07:30", "close": "20:00"},
+        {"open": "07:30", "close": "20:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_state_library",
+      "name": "State Library Victoria",
+      "category": "leisure",
+      "lat": -37.809800,
+      "lon": 144.964700,
+      "capacity": 1500,
+      "hours": [
+        {"open": "10:00", "close": "18:00"},
+        {"open": "10:00", "close": "21:00"},
+        {"open": "10:00", "close": "21:00"},
+        {"open": "10:00", "close": "21:00"},
+        {"open": "10:00", "close": "18:00"},
+        {"open": "10:00", "close": "17:00"},
+        {"open": "10:00", "close": "17:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_ngv",
+      "name": "National Gallery of Victoria",
+      "category": "leisure",
+      "lat": -37.822500,
+      "lon": 144.968700,
+      "capacity": 2500,
+      "hours": [
+        {"open": "10:00", "close": "17:00"},
+        {"open": "10:00", "close": "17:00"},
+        {"open": "10:00", "close": "17:00"},
+        {"open": "10:00", "close": "17:00"},
+        {"open": "10:00", "close": "17:00"},
+        {"open": "10:00", "close": "17:00"},
+        {"open": "10:00", "close": "17:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_carlton_gardens",
+      "name": "Carlton Gardens",
+      "category": "leisure",
+      "lat": -37.804900,
+      "lon": 144.971800,
+      "capacity": 2000,
+      "hours": [
+        {"open": "06:00", "close": "21:00"},
+        {"open": "06:00", "close": "21:00"},
+        {"open": "06:00", "close": "21:00"},
+        {"open": "06:00", "close": "21:00"},
+        {"open": "06:00", "close": "21:00"},
+        {"open": "06:00", "close": "21:00"},
+        {"open": "06:00", "close": "21:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_flinders_st",
+      "name": "Flinders Street Station",
+      "category": "transit",
+      "lat": -37.818217,
+      "lon": 144.966964,
+      "capacity": 5000,
+      "hours": [
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "06:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_southern_cross",
+      "name": "Southern Cross Station",
+      "category": "transit",
+      "lat": -37.818400,
+      "lon": 144.952600,
+      "capacity": 5000,
+      "hours": [
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "06:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_melbourne_central_station",
+      "name": "Melbourne Central Station",
+      "category": "transit",
+      "lat": -37.809900,
+      "lon": 144.962700,
+      "capacity": 4000,
+      "hours": [
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "06:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_parliament_station",
+      "name": "Parliament Station",
+      "category": "transit",
+      "lat": -37.811200,
+      "lon": 144.972900,
+      "capacity": 3500,
+      "hours": [
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "06:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_bourke_st_tram_stop",
+      "name": "Bourke St Mall Tram Stop",
+      "category": "transit",
+      "lat": -37.813400,
+      "lon": 144.965000,
+      "capacity": 300,
+      "hours": [
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "06:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_lygon_tram_stop",
+      "name": "Lygon St Tram Stop",
+      "category": "transit",
+      "lat": -37.800300,
+      "lon": 144.967300,
+      "capacity": 200,
+      "hours": [
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "06:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_town_hall",
+      "name": "Melbourne Town Hall",
+      "category": "civic",
+      "lat": -37.815100,
+      "lon": 144.966700,
+      "capacity": 1500,
+      "hours": [
+        {"open": "08:00", "close": "18:00"},
+        {"open": "08:00", "close": "18:00"},
+        {"open": "08:00", "close": "18:00"},
+        {"open": "08:00", "close": "18:00"},
+        {"open": "08:00", "close": "18:00"},
+        {"open": "09:00", "close": "13:00"},
+        {"open": "00:00", "close": "00:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_parliament_house",
+      "name": "Parliament House of Victoria",
+      "category": "civic",
+      "lat": -37.811500,
+      "lon": 144.973600,
+      "capacity": 1200,
+      "hours": [
+        {"open": "08:30", "close": "17:00"},
+        {"open": "08:30", "close": "17:00"},
+        {"open": "08:30", "close": "17:00"},
+        {"open": "08:30", "close": "17:00"},
+        {"open": "08:30", "close": "17:00"},
+        {"open": "00:00", "close": "00:00"},
+        {"open": "00:00", "close": "00:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_melbourne_gpo",
+      "name": "Melbourne GPO Civic Centre",
+      "category": "civic",
+      "lat": -37.812900,
+      "lon": 144.962600,
+      "capacity": 900,
+      "hours": [
+        {"open": "09:00", "close": "17:00"},
+        {"open": "09:00", "close": "17:00"},
+        {"open": "09:00", "close": "17:00"},
+        {"open": "09:00", "close": "17:00"},
+        {"open": "09:00", "close": "17:00"},
+        {"open": "10:00", "close": "16:00"},
+        {"open": "00:00", "close": "00:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_remand",
+      "name": "Melbourne Assessment Prison",
+      "category": "civic",
+      "lat": -37.807100,
+      "lon": 144.951700,
+      "capacity": 300,
+      "isDetentionFacility": true,
+      "hours": [
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_west_melbourne_flats",
+      "name": "West Melbourne Spencer St Flats",
+      "category": "residence",
+      "lat": -37.809600,
+      "lon": 144.945300,
+      "capacity": 110,
+      "hours": [
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_south_yarra_apartments",
+      "name": "South Yarra Toorak Rd Apartments",
+      "category": "residence",
+      "lat": -37.838600,
+      "lon": 144.993200,
+      "capacity": 130,
+      "hours": [
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"},
+        {"open": "00:00", "close": "23:59"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_flagstaff_offices",
+      "name": "Flagstaff Gardens Business Centre",
+      "category": "workplace",
+      "lat": -37.811900,
+      "lon": 144.955700,
+      "capacity": 1200,
+      "hours": [
+        {"open": "07:00", "close": "19:00"},
+        {"open": "07:00", "close": "19:00"},
+        {"open": "07:00", "close": "19:00"},
+        {"open": "07:00", "close": "19:00"},
+        {"open": "07:00", "close": "19:00"},
+        {"open": "00:00", "close": "00:00"},
+        {"open": "00:00", "close": "00:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_rmit_city",
+      "name": "RMIT University City Campus",
+      "category": "workplace",
+      "lat": -37.807600,
+      "lon": 144.963400,
+      "capacity": 4500,
+      "hours": [
+        {"open": "08:00", "close": "21:00"},
+        {"open": "08:00", "close": "21:00"},
+        {"open": "08:00", "close": "21:00"},
+        {"open": "08:00", "close": "21:00"},
+        {"open": "08:00", "close": "18:00"},
+        {"open": "09:00", "close": "16:00"},
+        {"open": "00:00", "close": "00:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_pellegrinis",
+      "name": "Pellegrini's Espresso Bar",
+      "category": "food",
+      "lat": -37.811900,
+      "lon": 144.971200,
+      "capacity": 40,
+      "price": 22.50,
+      "hours": [
+        {"open": "08:00", "close": "23:00"},
+        {"open": "08:00", "close": "23:00"},
+        {"open": "08:00", "close": "23:00"},
+        {"open": "08:00", "close": "23:00"},
+        {"open": "08:00", "close": "23:00"},
+        {"open": "08:00", "close": "23:00"},
+        {"open": "00:00", "close": "00:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_hosier_lane_cafe",
+      "name": "Hosier Lane Laneway Cafe",
+      "category": "food",
+      "lat": -37.817400,
+      "lon": 144.968900,
+      "capacity": 50,
+      "price": 16.00,
+      "hours": [
+        {"open": "07:00", "close": "17:00"},
+        {"open": "07:00", "close": "17:00"},
+        {"open": "07:00", "close": "17:00"},
+        {"open": "07:00", "close": "17:00"},
+        {"open": "07:00", "close": "18:00"},
+        {"open": "08:00", "close": "18:00"},
+        {"open": "08:00", "close": "16:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_the_strand_arcade_shops",
+      "name": "Royal Arcade Boutiques",
+      "category": "retail",
+      "lat": -37.813200,
+      "lon": 144.964100,
+      "capacity": 900,
+      "price": 42.00,
+      "hours": [
+        {"open": "10:00", "close": "18:00"},
+        {"open": "10:00", "close": "18:00"},
+        {"open": "10:00", "close": "18:00"},
+        {"open": "10:00", "close": "20:00"},
+        {"open": "10:00", "close": "20:00"},
+        {"open": "10:00", "close": "17:00"},
+        {"open": "11:00", "close": "17:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_flinders_lane_gallery",
+      "name": "Flinders Lane Gallery",
+      "category": "leisure",
+      "lat": -37.816200,
+      "lon": 144.968100,
+      "capacity": 400,
+      "hours": [
+        {"open": "10:00", "close": "17:00"},
+        {"open": "10:00", "close": "17:00"},
+        {"open": "10:00", "close": "17:00"},
+        {"open": "10:00", "close": "17:00"},
+        {"open": "10:00", "close": "18:00"},
+        {"open": "11:00", "close": "16:00"},
+        {"open": "00:00", "close": "00:00"}
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "id": "loc_flagstaff_station",
+      "name": "Flagstaff Station",
+      "category": "transit",
+      "lat": -37.812100,
+      "lon": 144.956200,
+      "capacity": 3000,
+      "hours": [
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "05:00", "close": "23:59"},
+        {"open": "06:00", "close": "23:59"}
+      ]
+    }
+  ]
+}

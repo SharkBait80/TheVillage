@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "jobs": [
+    {"schemaVersion": 1, "id": "job_barista_1", "locationId": "loc_lygon_cafe", "occupation": "Barista", "wagePerHour": 32.50, "shiftStart": "07:00", "shiftDurationHours": 6, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_barista_2", "locationId": "loc_degraves_espresso", "occupation": "Barista", "wagePerHour": 31.00, "shiftStart": "06:30", "shiftDurationHours": 7, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_chef_1", "locationId": "loc_hardware_lane_bistro", "occupation": "Chef", "wagePerHour": 45.00, "shiftStart": "10:00", "shiftDurationHours": 8, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_chef_2", "locationId": "loc_southbank_restaurant", "occupation": "Chef", "wagePerHour": 48.00, "shiftStart": "11:00", "shiftDurationHours": 8, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_waiter_1", "locationId": "loc_chinatown_dumplings", "occupation": "Waiter", "wagePerHour": 28.00, "shiftStart": "11:00", "shiftDurationHours": 7, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_waiter_2", "locationId": "loc_brunswick_st_diner", "occupation": "Waiter", "wagePerHour": 27.50, "shiftStart": "08:00", "shiftDurationHours": 6, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_market_vendor_1", "locationId": "loc_qv_market", "occupation": "Market Vendor", "wagePerHour": 26.00, "shiftStart": "06:00", "shiftDurationHours": 8, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_market_vendor_2", "locationId": "loc_qv_market", "occupation": "Market Vendor", "wagePerHour": 25.50, "shiftStart": "07:00", "shiftDurationHours": 7, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_nurse_1", "locationId": "loc_rmh_hospital", "occupation": "Nurse", "wagePerHour": 52.00, "shiftStart": "07:00", "shiftDurationHours": 10, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_nurse_2", "locationId": "loc_rmh_hospital", "occupation": "Nurse", "wagePerHour": 53.50, "shiftStart": "08:00", "shiftDurationHours": 9, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_doctor_1", "locationId": "loc_rmh_hospital", "occupation": "Doctor", "wagePerHour": 110.00, "shiftStart": "08:00", "shiftDurationHours": 10, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_lecturer_1", "locationId": "loc_unimelb", "occupation": "Lecturer", "wagePerHour": 68.00, "shiftStart": "09:00", "shiftDurationHours": 7, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_librarian_1", "locationId": "loc_unimelb", "occupation": "Librarian", "wagePerHour": 40.00, "shiftStart": "09:00", "shiftDurationHours": 7, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_lecturer_2", "locationId": "loc_rmit_city", "occupation": "Lecturer", "wagePerHour": 66.00, "shiftStart": "10:00", "shiftDurationHours": 6, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_accountant_1", "locationId": "loc_rialto_towers", "occupation": "Accountant", "wagePerHour": 58.00, "shiftStart": "09:00", "shiftDurationHours": 8, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_lawyer_1", "locationId": "loc_collins_st_offices", "occupation": "Lawyer", "wagePerHour": 95.00, "shiftStart": "08:00", "shiftDurationHours": 9, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_software_engineer_1", "locationId": "loc_collins_st_offices", "occupation": "Software Engineer", "wagePerHour": 72.00, "shiftStart": "09:00", "shiftDurationHours": 8, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_software_engineer_2", "locationId": "loc_flagstaff_offices", "occupation": "Software Engineer", "wagePerHour": 70.00, "shiftStart": "09:30", "shiftDurationHours": 8, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_producer_1", "locationId": "loc_docklands_studios", "occupation": "Media Producer", "wagePerHour": 60.00, "shiftStart": "08:00", "shiftDurationHours": 8, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_retail_assistant_1", "locationId": "loc_melbourne_central", "occupation": "Retail Assistant", "wagePerHour": 25.00, "shiftStart": "10:00", "shiftDurationHours": 7, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_retail_assistant_2", "locationId": "loc_emporium", "occupation": "Retail Assistant", "wagePerHour": 24.50, "shiftStart": "10:30", "shiftDurationHours": 6, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_retail_assistant_3", "locationId": "loc_bourke_st_mall", "occupation": "Retail Assistant", "wagePerHour": 25.50, "shiftStart": "09:00", "shiftDurationHours": 7, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_council_officer_1", "locationId": "loc_town_hall", "occupation": "Council Officer", "wagePerHour": 44.00, "shiftStart": "09:00", "shiftDurationHours": 7, "assignedAgentId": null},
+    {"schemaVersion": 1, "id": "job_public_servant_1", "locationId": "loc_parliament_house", "occupation": "Public Servant", "wagePerHour": 47.00, "shiftStart": "08:30", "shiftDurationHours": 8, "assignedAgentId": null}
+  ]
+}
