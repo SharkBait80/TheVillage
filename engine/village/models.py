@@ -267,6 +267,13 @@ class AgentState:
     missedShiftStreak: int = 0
     # tracks conversation ids already credited social recovery (Req 5.4).
     creditedConversations: List[str] = field(default_factory=list)
+    # Transient injected-world-event hints (backward-compatible, default empty).
+    # avoidedLocations maps a hazardous locationId -> expiry sim-time ISO string
+    # (the heuristic steers agents away until the hint expires). attractorLocation
+    # is an optional {"locationId": str, "expiry": str} pull toward a positive
+    # event (festival/market). Both round-trip through persistence.
+    avoidedLocations: Dict[str, str] = field(default_factory=dict)
+    attractorLocation: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -288,6 +295,9 @@ class AgentState:
             "suspectedSince": self.suspectedSince,
             "missedShiftStreak": self.missedShiftStreak,
             "creditedConversations": list(self.creditedConversations),
+            "avoidedLocations": dict(self.avoidedLocations),
+            "attractorLocation": (dict(self.attractorLocation)
+                                  if self.attractorLocation else None),
         }
 
     @classmethod
@@ -311,6 +321,10 @@ class AgentState:
             suspectedSince=d.get("suspectedSince"),
             missedShiftStreak=int(d.get("missedShiftStreak", 0)),
             creditedConversations=list(d.get("creditedConversations", [])),
+            avoidedLocations={str(k): str(v) for k, v in
+                              (d.get("avoidedLocations") or {}).items()},
+            attractorLocation=(dict(d["attractorLocation"])
+                               if d.get("attractorLocation") else None),
         )
 
 

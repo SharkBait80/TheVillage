@@ -177,8 +177,8 @@ def validate_jobs(jobs: list, locations: list) -> None:
 
 def validate_agents(agents: list, locations: list) -> None:
     """Validate against Requirement 4 constraints."""
-    if not (5 <= len(agents) <= 100):
-        raise ValidationError(f"agent count {len(agents)} outside 5..100 (Req 4.2)")
+    if not (5 <= len(agents) <= 2000):
+        raise ValidationError(f"agent count {len(agents)} outside 5..2000 (Req 4.2)")
     residence_ids = {l["id"] for l in locations if l["category"] == "residence"}
     seen_ids: set[str] = set()
     seen_names: set[str] = set()
@@ -278,7 +278,16 @@ def validate_config(config: dict, detention_id: str) -> None:
 # Job assignment
 # --------------------------------------------------------------------------- #
 def assign_jobs(agents: list, jobs: list) -> int:
-    """Assign jobs to matching employed agents. Returns number assigned."""
+    """Assign concrete Job rows to matching employed agents.
+
+    Returns the number of concrete jobs assigned. There are only a limited
+    number of Job rows (jobs.json); at large populations more agents are
+    ``employed`` by occupation than there are concrete Job rows. Such agents
+    remain ``employed`` (their occupation matches a real job occupation) but
+    carry ``jobId = None`` until a concrete shift is available — we do NOT
+    demote them to unemployed, so the seeded world keeps a healthy employment
+    rate at scale.
+    """
     jobs_by_occ: dict[str, list] = {}
     for j in jobs:
         j["assignedAgentId"] = None
@@ -291,8 +300,8 @@ def assign_jobs(agents: list, jobs: list) -> int:
         pool = jobs_by_occ.get(occ, [])
         free = next((j for j in pool if j["assignedAgentId"] is None), None)
         if free is None:
-            # No free job of that occupation -> mark unemployed (consistency).
-            a["state"]["employmentStatus"] = "unemployed"
+            # No free concrete Job of that occupation. Keep the agent employed
+            # (occupation matches a real job occupation) with no jobId yet.
             a["state"]["jobId"] = None
             continue
         free["assignedAgentId"] = a["id"]
@@ -414,7 +423,7 @@ def main(argv=None) -> int:
     ap.add_argument("--dry-run", action="store_true",
                     help="validate only; no AWS calls")
     ap.add_argument("--population", type=int, default=None,
-                    help="override population count (5..100)")
+                    help="override population count (5..2000)")
     args = ap.parse_args(argv)
     try:
         return run(args.table, args.sim_id, args.dry_run, args.population)

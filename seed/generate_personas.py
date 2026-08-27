@@ -54,6 +54,12 @@ FIRST_NAMES = [
     "Zara", "Mateo", "Anh", "Ivy", "Diego", "Harper", "Sina", "Bilal",
     "Freya", "Kai", "Lucia", "Omar", "Poppy", "Rohan", "Talia", "Ezra",
     "Mila", "Jarrah", "Astrid", "Hassan",
+    # Expanded pool for larger populations (culturally diverse Melbourne).
+    "Ana", "Bao", "Cormac", "Deepa", "Eun", "Farida", "Gethin", "Hana",
+    "Ihaka", "Jun", "Keira", "Lachlan", "Manon", "Nikhil", "Orla", "Paolo",
+    "Qadir", "Rania", "Seong", "Tara", "Uma", "Viktor", "Willa", "Xanthe",
+    "Yara", "Zane", "Amelie", "Bodhi", "Cara", "Dev", "Esme", "Finn",
+    "Georgia", "Huong", "Indira", "Jonah", "Keanu", "Lena", "Malik", "Niamh",
 ]
 
 LAST_NAMES = [
@@ -63,6 +69,10 @@ LAST_NAMES = [
     "Wilson", "Ahmadi", "Wang", "Murphy", "Mensah", "Costa", "Anderson",
     "Begum", "Campbell", "Tran", "Lopez", "Singh", "Pham", "Jones",
     "Hernandez", "Dubois", "Yilmaz", "Ali", "Andersson", "Lee",
+    # Expanded pool for larger populations.
+    "Kim", "Martin", "Rahman", "Novak", "Fernandez", "Osei", "Ivanov",
+    "Nakamura", "Delgado", "Fraser", "Bianchi", "Schmidt", "Popescu",
+    "Abebe", "Vidal", "Nasser", "Walsh", "Ryan", "Gallo", "Zhou",
 ]
 
 TRAITS = [
@@ -115,7 +125,8 @@ def generate_personas(count: int, locations: list, seed: int = 42) -> list[dict]
     """Generate ``count`` merged Persona + Agent_State agent dicts.
 
     Args:
-        count: number of agents, 5..100 (Req 4.2/4.4).
+        count: number of agents, 5..2000 (Req 4.2/4.4; cap raised to support
+            large-scale populations of 500+).
         locations: list of Location dicts (as in locations.json); used to pick
             residence homes and set initial position (Req 4.7).
         seed: RNG seed for deterministic output.
@@ -125,8 +136,8 @@ def generate_personas(count: int, locations: list, seed: int = 42) -> list[dict]
     """
     if not isinstance(count, int) or isinstance(count, bool):
         raise ValueError("count must be an integer")
-    if not (5 <= count <= 100):
-        raise ValueError("count must be an integer between 5 and 100 inclusive")
+    if not (5 <= count <= 2000):
+        raise ValueError("count must be an integer between 5 and 2000 inclusive")
 
     residences = [l for l in locations if l.get("category") == "residence"]
     if not residences:
@@ -136,18 +147,28 @@ def generate_personas(count: int, locations: list, seed: int = 42) -> list[dict]
     first, last = _make_name_pools(rng)
     used_names: set[str] = set()
 
-    # Build the occupation assignment deterministically. Fill up to each job
-    # occupation's slot count first (so those agents can all be employed), then
-    # pad the remainder with non-job occupations (intentionally unemployed,
-    # Req 4.7). We aim to employ a clear majority (~70%+) of the population.
+    # Build the occupation assignment deterministically. We aim to employ a
+    # clear majority (~72%) of the population by assigning job-matching
+    # occupations, then pad the remainder with non-job occupations
+    # (intentionally unemployed, Req 4.7). For small populations the number of
+    # job occupations is bounded by the concrete Job-slot pool; for large
+    # populations we repeat the job-occupation pool (weighted by slot count) so
+    # the employed ratio scales rather than staying pinned to ~24 agents.
     job_occ_set = set(JOB_OCCUPATIONS)
     slot_occupations: list[str] = []
     for occ, slots in JOB_OCCUPATION_SLOTS.items():
         slot_occupations.extend([occ] * slots)
-    # Cap job occupations at ~76% of population so a few agents are unemployed.
-    max_job_agents = min(len(slot_occupations), int(round(count * 0.76)))
-    rng.shuffle(slot_occupations)
-    occupation_assignment = slot_occupations[:max_job_agents]
+
+    # Target ~72% of the population as employed (job) occupations.
+    target_job_agents = int(round(count * 0.72))
+
+    # Repeat the slot-weighted occupation pool until we have enough entries to
+    # cover the target, so the occupation mix tracks real job availability.
+    job_pool: list[str] = []
+    while len(job_pool) < target_job_agents:
+        job_pool.extend(slot_occupations)
+    rng.shuffle(job_pool)
+    occupation_assignment = job_pool[:target_job_agents]
     while len(occupation_assignment) < count:
         occupation_assignment.append(rng.choice(NON_JOB_OCCUPATIONS))
     rng.shuffle(occupation_assignment)

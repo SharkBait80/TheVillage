@@ -118,6 +118,48 @@ class FakeLambda:
         return {"StatusCode": 202}
 
 
+class _FakeBody:
+    """Mimics the streaming body of a Bedrock invoke_model response."""
+
+    def __init__(self, payload: bytes):
+        self._payload = payload
+
+    def read(self):
+        return self._payload
+
+
+class FakeBedrock:
+    """In-memory Bedrock Runtime returning a canned Claude Messages verdict.
+
+    Construct with a verdict dict to have invoke_model echo it as JSON in a
+    text content block, or raise_exc=True to simulate a Bedrock outage, or
+    raw_text to return arbitrary (e.g. unparseable) text.
+    """
+
+    def __init__(self, verdict=None, raise_exc=False, raw_text=None):
+        self.verdict = verdict
+        self.raise_exc = raise_exc
+        self.raw_text = raw_text
+        self.calls = []
+
+    def invoke_model(self, modelId=None, contentType=None, accept=None, body=None, **_):
+        self.calls.append({"modelId": modelId, "body": json.loads(body.decode("utf-8"))})
+        if self.raise_exc:
+            raise RuntimeError("bedrock unavailable")
+        if self.raw_text is not None:
+            text = self.raw_text
+        else:
+            # Emit the verdict wrapped in a markdown fence to exercise the
+            # tolerant JSON extractor.
+            text = "```json\n" + json.dumps(self.verdict) + "\n```"
+        payload = json.dumps({
+            "content": [{"type": "text", "text": text}],
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }).encode("utf-8")
+        return {"body": _FakeBody(payload)}
+
+
+
 # --------------------------------------------------------------------------- #
 # Fixtures
 # --------------------------------------------------------------------------- #
@@ -789,6 +831,186 @@ def test_config_rejects_price_out_of_range(fake_table):
     assert status == 400
     fields = [e["field"] for e in body["errors"]]
     assert any("per1kInput" in f for f in fields)
+
+
+# --------------------------------------------------------------------------- #
+# INJECTED WORLD EVENTS (POST /v1/sim/{simId}/events) — LLM-moderated
+# --------------------------------------------------------------------------- #
+
+def _patch_bedrock(monkeypatch, **kwargs):
+    """Install a FakeBedrock as the module's lazy client; return it."""
+    fb = FakeBedrock(**kwargs)
+    monkeypatch.setattr(index, "_bedrock", lambda: fb)
+    return fb
+
+
+def _valid_event_body(**overrides):
+    body = {
+        "title": "Tram delays on Swanston Street",
+        "description": "A stalled tram is causing minor delays near Fed Square.",
+        "lat": -37.8179,
+        "lon": 144.9668,
+        "locationId": "loc_fed",
+        "scale": "local",
+        "severity": "minor",
+        "radiusM": 300,
+    }
+    body.update(overrides)
+    return body
+
+
+def test_create_event_accepted_writes_injected_item(fake_table, monkeypatch):
+    seed_status(fake_table, sim_time="2026-03-02T14:30:00+11:00")
+    fb = _patch_bedrock(monkeypatch,
+                        verdict={"plausible": True, "relevant": True,
+                                 "toxic": False, "reason": "plausible local incident"})
+    ev = make_event("POST", "/v1/sim/melb/events", body=_valid_event_body())
+    status, body = parse(index.handler(ev))
+    assert status == 201 and body["ok"] is True
+    assert body["data"]["accepted"] is True
+    assert body["data"]["verdict"]["toxic"] is False
+    # simTime defaults to current STATUS simTime when omitted.
+    assert body["data"]["simTime"] == "2026-03-02T14:30:00+11:00"
+    # The model was actually consulted (fast model, Messages API).
+    assert fb.calls and fb.calls[0]["modelId"] == index.CONTENT_MODEL_ID
+    assert fb.calls[0]["body"]["anthropic_version"] == index.ANTHROPIC_VERSION
+
+    # Exactly one INJECTED_EVENT# item with the engine-contract field names.
+    injected = [i for (pk, sk), i in fake_table.items.items()
+                if sk.startswith("INJECTED_EVENT#")]
+    assert len(injected) == 1
+    it = injected[0]
+    for f in ("id", "simTime", "lat", "lon", "locationId", "title",
+              "description", "scale", "severity", "radiusM"):
+        assert f in it, f"missing engine-contract field {f}"
+    assert it["type"] == "injected_event"
+    assert isinstance(it["lat"], Decimal) and isinstance(it["lon"], Decimal)
+    assert isinstance(it["radiusM"], Decimal)
+    assert it["id"] == body["data"]["id"]
+
+    # A human-readable EVENT# mirror surfaces via GET /events (category=injected).
+    got = index.handler(make_event("GET", "/v1/sim/melb/events",
+                                   query={"category": "injected"}))
+    _, evbody = parse(got)
+    assert len(evbody["data"]["events"]) == 1
+    assert "Operator injected event" in evbody["data"]["events"][0]["description"]
+
+
+def test_create_event_reject_toxic_422_no_write(fake_table, monkeypatch):
+    seed_status(fake_table)
+    _patch_bedrock(monkeypatch,
+                   verdict={"plausible": True, "relevant": True,
+                            "toxic": True, "reason": "contains harassment"})
+    ev = make_event("POST", "/v1/sim/melb/events",
+                    body=_valid_event_body(title="Nasty attack on a named person"))
+    status, body = parse(index.handler(ev))
+    assert status == 422 and body["ok"] is False
+    assert "rejected" in body["error"].lower()
+    assert body["data"]["accepted"] is False
+    assert body["data"]["verdict"]["toxic"] is True
+    # Nothing persisted on rejection.
+    assert not any(sk.startswith("INJECTED_EVENT#") for (_, sk) in fake_table.items)
+
+
+def test_create_event_reject_implausible_422(fake_table, monkeypatch):
+    seed_status(fake_table)
+    _patch_bedrock(monkeypatch,
+                   verdict={"plausible": False, "relevant": True,
+                            "toxic": False, "reason": "a dragon eating the moon is impossible"})
+    ev = make_event("POST", "/v1/sim/melb/events",
+                    body=_valid_event_body(title="A dragon eats the moon"))
+    status, body = parse(index.handler(ev))
+    assert status == 422 and body["ok"] is False
+    assert body["data"]["verdict"]["plausible"] is False
+    assert not any(sk.startswith("INJECTED_EVENT#") for (_, sk) in fake_table.items)
+
+
+def test_create_event_reject_irrelevant_422(fake_table, monkeypatch):
+    seed_status(fake_table)
+    _patch_bedrock(monkeypatch,
+                   verdict={"plausible": True, "relevant": False,
+                            "toxic": False, "reason": "gibberish spam"})
+    ev = make_event("POST", "/v1/sim/melb/events",
+                    body=_valid_event_body(title="asdfjkl qwerty zzz"))
+    status, body = parse(index.handler(ev))
+    assert status == 422 and body["data"]["verdict"]["relevant"] is False
+
+
+def test_create_event_out_of_bounds_400(fake_table, monkeypatch):
+    seed_status(fake_table)
+    fb = _patch_bedrock(monkeypatch,
+                        verdict={"plausible": True, "relevant": True, "toxic": False, "reason": "ok"})
+    # Sydney coords — outside Melbourne bounds.
+    ev = make_event("POST", "/v1/sim/melb/events",
+                    body=_valid_event_body(lat=-33.87, lon=151.21))
+    status, body = parse(index.handler(ev))
+    assert status == 400 and body["ok"] is False
+    assert "bounds" in body["error"].lower()
+    # Structural validation happens BEFORE the model call.
+    assert fb.calls == []
+    assert not any(sk.startswith("INJECTED_EVENT#") for (_, sk) in fake_table.items)
+
+
+def test_create_event_malformed_body_400(fake_table, monkeypatch):
+    seed_status(fake_table)
+    fb = _patch_bedrock(monkeypatch,
+                        verdict={"plausible": True, "relevant": True, "toxic": False, "reason": "ok"})
+    # Missing title, non-numeric lat.
+    bad = {"description": "no title", "lat": "not-a-number", "lon": 144.96}
+    ev = make_event("POST", "/v1/sim/melb/events", body=bad)
+    status, body = parse(index.handler(ev))
+    assert status == 400 and body["ok"] is False
+    assert fb.calls == []
+
+
+def test_create_event_bad_enum_400(fake_table, monkeypatch):
+    seed_status(fake_table)
+    _patch_bedrock(monkeypatch,
+                   verdict={"plausible": True, "relevant": True, "toxic": False, "reason": "ok"})
+    ev = make_event("POST", "/v1/sim/melb/events",
+                    body=_valid_event_body(severity="apocalyptic"))
+    status, body = parse(index.handler(ev))
+    assert status == 400 and "severity" in body["error"]
+
+
+def test_create_event_bedrock_failure_fails_closed_on_toxicity(fake_table, monkeypatch):
+    # Model call raises -> heuristic fallback. A banned phrase must be rejected.
+    seed_status(fake_table)
+    _patch_bedrock(monkeypatch, raise_exc=True)
+    ev = make_event("POST", "/v1/sim/melb/events",
+                    body=_valid_event_body(
+                        title="Someone tells people to kill yourself downtown",
+                        description="kill yourself is written on a wall"))
+    status, body = parse(index.handler(ev))
+    assert status == 422 and body["data"]["verdict"]["toxic"] is True
+
+
+def test_create_event_bedrock_failure_allows_benign(fake_table, monkeypatch):
+    # Model call raises -> heuristic fallback allows a benign, well-formed event
+    # (plausibility/relevance uncertainty does not block).
+    seed_status(fake_table, sim_time="2026-03-02T14:30:00+11:00")
+    _patch_bedrock(monkeypatch, raise_exc=True)
+    ev = make_event("POST", "/v1/sim/melb/events", body=_valid_event_body())
+    status, body = parse(index.handler(ev))
+    assert status == 201 and body["data"]["accepted"] is True
+    assert body["data"]["verdict"]["degraded"] is True
+
+
+def test_create_event_unparseable_model_output_degrades(fake_table, monkeypatch):
+    seed_status(fake_table)
+    _patch_bedrock(monkeypatch, raw_text="I cannot produce JSON, sorry.")
+    ev = make_event("POST", "/v1/sim/melb/events", body=_valid_event_body())
+    status, body = parse(index.handler(ev))
+    # Benign body -> heuristic allows, response flags degraded.
+    assert status == 201 and body["data"]["verdict"]["degraded"] is True
+
+
+def test_create_event_requires_auth(fake_table, monkeypatch):
+    _patch_bedrock(monkeypatch,
+                   verdict={"plausible": True, "relevant": True, "toxic": False, "reason": "ok"})
+    ev = make_event("POST", "/v1/sim/melb/events", body=_valid_event_body(), authed=False)
+    status, body = parse(index.handler(ev))
+    assert status == 401 and fake_table.calls == []
 
 
 if __name__ == "__main__":

@@ -218,6 +218,20 @@ export class VillageStack extends cdk.Stack {
         resources: [assetFn.functionArn],
       })
     );
+    // Bedrock: content moderation for operator-injected world events
+    // (POST /v1/sim/{simId}/events). Uses the fast Claude model in this region
+    // (ap-southeast-2) via the Messages API. Scoped to Anthropic foundation
+    // models + the au. inference profile in this region/account.
+    apiFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['bedrock:InvokeModel'],
+        resources: [
+          `arn:aws:bedrock:${region}::foundation-model/anthropic.*`,
+          `arn:aws:bedrock:${region}:${account}:inference-profile/au.anthropic.*`,
+        ],
+      })
+    );
 
     // -------------------------------------------------------------------------
     // 5. Cognito User Pool + Client, HTTP API with JWT authorizer (Req 17.4/5)
@@ -400,13 +414,15 @@ export class VillageStack extends cdk.Stack {
     });
 
     const engineTaskDef = new ecs.FargateTaskDefinition(this, 'EngineTaskDef', {
-      // Vertically scaled from 0.5 vCPU/1GB to 1 vCPU/2GB. The engine fans out
-      // per-agent harness calls with bounded concurrency (<=8 threads) each
-      // tick; the extra CPU/memory gives headroom for 25 agents' concurrent
-      // network I/O, JSON (de)serialisation, and route computation without the
-      // tick loop falling behind real time. (Valid ARM64 Fargate pair.)
-      cpu: 1024,
-      memoryLimitMiB: 2048,
+      // Vertically scaled to 4 vCPU/8GB to support a population of 500 agents.
+      // The engine fans out per-agent harness calls with bounded concurrency
+      // each tick and persists every agent's state per tick; at 500 agents the
+      // extra CPU/memory gives headroom for concurrent network I/O, JSON
+      // (de)serialisation, route computation, and the larger in-memory world
+      // snapshot without the tick loop falling behind real time.
+      // (Valid ARM64 Fargate pair: cpu 4096 -> memory 8192..30720 MiB.)
+      cpu: 4096,
+      memoryLimitMiB: 8192,
       taskRole: engineTaskRole,
       runtimePlatform: {
         cpuArchitecture: ecs.CpuArchitecture.ARM64,

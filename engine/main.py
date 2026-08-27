@@ -29,6 +29,7 @@ from village.controller import Simulation_Controller
 from village.crime import Crime_Engine
 from village.economy import Economy_Engine
 from village.eventlog import Event_Log, seq20
+from village.events_inject import Injected_Event
 from village.law import Law_Enforcement_Engine
 from village.models import Agent, Config, Job, Location, SimStatus
 from village.movement import Movement_Engine
@@ -100,6 +101,7 @@ def load_world(store: DynamoStore, parser: World_State_Parser,
     agents: Dict[str, Agent] = {}
     locations: Dict[str, Location] = {}
     jobs: Dict[str, Job] = {}
+    injected: Dict[str, Injected_Event] = {}
     for item in items:
         sk = item.get("SK", "")
         try:
@@ -111,11 +113,18 @@ def load_world(store: DynamoStore, parser: World_State_Parser,
                 loc = parser.parse(item); locations[loc.id] = loc
             elif sk.startswith("JOB#"):
                 j = parser.parse(item); jobs[j.id] = j
+            elif sk.startswith("INJECTED_EVENT#"):
+                # Injected events are raw items (not part of the domain state
+                # parser). Fall back to the SK for the id if none is present.
+                ev = Injected_Event.from_dict({**item, "id": item.get("id") or sk})
+                if ev.id:
+                    injected[ev.id] = ev
         except Exception:
             continue
     if config is None:
         config = Config(simId=sim_id)
-    return WorldState(config=config, agents=agents, locations=locations, jobs=jobs)
+    return WorldState(config=config, agents=agents, locations=locations,
+                      jobs=jobs, injectedEvents=injected)
 
 
 def write_status(store: DynamoStore, sim_id: str, status: SimStatus,
@@ -130,6 +139,35 @@ def write_status(store: DynamoStore, sim_id: str, status: SimStatus,
 
 def read_control(store: DynamoStore, sim_id: str) -> Optional[Dict[str, Any]]:
     return store.get(sim_id, sk_control())
+
+
+def refresh_injected_events(store: DynamoStore, world: WorldState,
+                            sim_id: str) -> int:
+    """Merge any newly-injected events from DynamoDB into the live world.
+
+    Operators inject events while the sim runs, so we re-scan for
+    ``INJECTED_EVENT#`` items each loop and add any not already known. Already
+    processed ids are left in ``processedEventIds`` so they don't re-fire.
+    Returns the number of newly discovered events. Defensive: never raises.
+    """
+    added = 0
+    try:
+        items = store.query_pk(sim_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[engine] injected-event refresh error: {e}", flush=True)
+        return 0
+    for item in items:
+        sk = item.get("SK", "")
+        if not sk.startswith("INJECTED_EVENT#"):
+            continue
+        try:
+            ev = Injected_Event.from_dict({**item, "id": item.get("id") or sk})
+        except Exception:  # noqa: BLE001
+            continue
+        if ev.id and ev.id not in world.injectedEvents:
+            world.injectedEvents[ev.id] = ev
+            added += 1
+    return added
 
 
 class DynamoEventSink:
@@ -227,6 +265,7 @@ def main() -> None:
 
         try:
             proc = time.monotonic() - loop_start
+            refresh_injected_events(store, world, sim_id)
             report = ticker.advance_once(tick_processing_seconds=proc)
             if report is not None and (report.decisions_triggered or report.events_written):
                 print(f"[engine] tick {report.sim_time} decisions={report.decisions_triggered} "

@@ -18,5 +18,5 @@
       "au.anthropic.claude-haiku-4-5-20251001-v1:0": {"per1kInput": 0.001, "per1kOutput": 0.005, "note": "estimate; Bedrock Sydney (ap-southeast-2) pricing not confirmed"}
     }
   },
-  "population": 25
+  "population": 500
 }

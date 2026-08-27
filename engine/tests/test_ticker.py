@@ -351,3 +351,221 @@ def test_reflection_emits_memory_events_on_day_rollover():
     reflections = log.query(category="memory").entries
     assert reflections, "expected a reflection (memory) event on rollover"
     assert reflections[-1].detail["kind"] == "reflection"
+
+
+# ---------------------------------------------------------------------------
+# New: behaviour WITHOUT a working LLM runtime (heuristics + local utterances)
+# ---------------------------------------------------------------------------
+
+def _multi_location_world():
+    """A small world with several categories so heuristics have real options."""
+    def L(lid, name, cat, lat, lon, price=None):
+        return Location(id=lid, name=name, category=cat, lat=lat, lon=lon,
+                        capacity=20, hours=[OpeningHours("00:00", "23:59")] * 7,
+                        price=price)
+    locs = {
+        "loc_home": L("loc_home", "Home", LocationCategory.RESIDENCE, -37.810, 144.950),
+        "loc_cafe": L("loc_cafe", "Cafe", LocationCategory.FOOD, -37.812, 144.952, 8.5),
+        "loc_park": L("loc_park", "Park", LocationCategory.LEISURE, -37.815, 144.955),
+    }
+    config = Config(simId="melb", accelerationFactor=60,
+                    detentionFacilityId="loc_remand",
+                    budget=Budget(prices={OPUS: ModelPrice(0.015, 0.075),
+                                          HAIKU: ModelPrice(0.0008, 0.004)}))
+    state = AgentState(lat=-37.810, lon=144.950, presentLocationId="loc_home",
+                       needs={"hunger": 20, "energy": 70, "social": 70, "fun": 70},
+                       cash=100.0, employmentStatus=EmploymentStatus.UNEMPLOYED,
+                       legalStatus=LegalStatus.CLEAR, dailyLivingCost=40.0)
+    persona = Persona(name="Aroha", age=34, occupation="Barista",
+                      traits=["warm"], background="b", homeLocationId="loc_home")
+    agent = Agent(id="agent_01", persona=persona, state=state)
+    return WorldState(config=config, agents={"agent_01": agent}, locations=locs)
+
+
+def _no_runtime_ticker(world, start="2026-03-02T12:00:00"):
+    fake = FakeClock()
+    clock = Simulation_Clock(
+        localize(datetime.fromisoformat(start)),
+        acceleration_factor=60, real_clock=fake)
+    controller = Simulation_Controller(world.config)
+    controller.start()
+    budget = Budget_Accountant(world.config.budget)
+    log = Event_Log()
+    # runtime=None => harness unavailable; heuristic + local utterances kick in.
+    ticker = Ticker(world=world, clock=clock, controller=controller,
+                    runtime=None, event_log=log, budget=budget)
+    return ticker, fake, log
+
+
+def test_heuristic_decision_when_runtime_none_not_idle():
+    world = _multi_location_world()  # hunger low => should seek food
+    ticker, fake, log = _no_runtime_ticker(world)
+    fake.tick(1.0)
+    ticker.advance_once()
+
+    agent = world.agents["agent_01"]
+    assert agent.state.currentAction is not None
+    # Hungry agent at home should travel to the cafe (not idle).
+    act = agent.state.currentAction
+    assert act.type.value in ("travel", "eat")
+    # A heuristic action event was logged.
+    actions = [e for e in log.query(category="action").entries
+               if (e.detail or {}).get("kind") == "heuristic"]
+    assert actions, "expected a heuristic action event"
+    assert actions[-1].detail["action"]["type"] in ("travel", "eat")
+
+
+def test_no_runtime_conversation_forms_with_local_utterances():
+    world = _two_agent_socialising_world()  # both hold socialise->each other
+    ticker, fake, log = _no_runtime_ticker(world, start="2026-03-02T12:00:00")
+    fake.tick(1.0)
+    ticker.advance_once()
+
+    convos = log.query(category="conversation").entries
+    assert convos, "expected a conversation even without a runtime"
+    detail = convos[-1].detail
+    assert detail["kind"] == "conversation-ended"
+    assert set(detail["participants"]) == {"agent_01", "agent_02"}
+    assert len(detail["utterances"]) >= 2
+    # utterances are non-empty strings
+    assert all(u["text"].strip() for u in detail["utterances"])
+
+
+def test_no_runtime_low_social_agents_eventually_converse():
+    """With runtime=None, idle low-social co-located agents should choose to
+    socialise via the heuristic and form a conversation within a few ticks."""
+    def mk(aid, name):
+        st = AgentState(lat=-37.815, lon=144.955, presentLocationId="loc_park",
+                        needs={"hunger": 70, "energy": 70, "social": 15, "fun": 70},
+                        cash=100.0, employmentStatus=EmploymentStatus.UNEMPLOYED,
+                        legalStatus=LegalStatus.CLEAR, dailyLivingCost=40.0)
+        persona = Persona(name=name, age=30, occupation="Barista", traits=["warm"],
+                          background="b", homeLocationId="loc_home")
+        return Agent(id=aid, persona=persona, state=st)
+
+    park = Location(id="loc_park", name="Park", category=LocationCategory.LEISURE,
+                    lat=-37.815, lon=144.955, capacity=20,
+                    hours=[OpeningHours("00:00", "23:59")] * 7)
+    config = Config(simId="melb", accelerationFactor=60,
+                    detentionFacilityId="loc_remand",
+                    budget=Budget(prices={OPUS: ModelPrice(0.015, 0.075),
+                                          HAIKU: ModelPrice(0.0008, 0.004)}))
+    a1, a2 = mk("agent_01", "Aroha"), mk("agent_02", "Marco")
+    world = WorldState(config=config,
+                       agents={"agent_01": a1, "agent_02": a2},
+                       locations={"loc_park": park})
+    ticker, fake, log = _no_runtime_ticker(world)
+
+    formed = False
+    for _ in range(5):
+        fake.tick(1.0)
+        ticker.advance_once()
+        if log.query(category="conversation").entries:
+            formed = True
+            break
+    assert formed, "co-located low-social agents should converse via heuristics"
+
+
+# ---------------------------------------------------------------------------
+# New: injected world event propagation into the tick loop
+# ---------------------------------------------------------------------------
+
+def _injected(ev_id, **kw):
+    from village.events_inject import Injected_Event
+    return Injected_Event(id=ev_id, **kw)
+
+
+def test_injected_severe_event_makes_all_agents_aware_and_emits_system_event():
+    world = _two_agent_socialising_world()
+    world.injectedEvents["evt-1"] = _injected(
+        "evt-1", simTime="2026-03-02T06:00:00+11:00",
+        lat=-37.81, lon=144.95, locationId="loc_home",
+        title="Explosion", description="a huge blast downtown",
+        scale="wide", severity="severe")
+    ticker, fake, log = _no_runtime_ticker(world, start="2026-03-02T06:00:00")
+    fake.tick(1.0)
+    ticker.advance_once()
+
+    sys_events = [e for e in log.query(category="system").entries
+                  if (e.detail or {}).get("kind") == "injected-event"]
+    assert sys_events, "expected a system event summarising propagation"
+    detail = sys_events[-1].detail
+    assert detail["awareCount"] == 2
+    assert detail["scary"] is True
+    # event processed only once
+    assert "evt-1" in ticker.world.processedEventIds
+    # scary event flagged the location for avoidance on aware agents
+    for aid in ("agent_01", "agent_02"):
+        assert "loc_home" in world.agents[aid].state.avoidedLocations
+
+
+def test_injected_event_processed_only_once():
+    world = _two_agent_socialising_world()
+    world.injectedEvents["evt-1"] = _injected(
+        "evt-1", simTime="2026-03-02T06:00:00+11:00",
+        lat=-37.81, lon=144.95, title="City Alert", scale="wide", severity="major")
+    ticker, fake, log = _no_runtime_ticker(world, start="2026-03-02T06:00:00")
+    for _ in range(3):
+        fake.tick(1.0)
+        ticker.advance_once()
+    sys_events = [e for e in log.query(category="system").entries
+                  if (e.detail or {}).get("kind") == "injected-event"]
+    assert len(sys_events) == 1, "event should propagate exactly once"
+
+
+def test_injected_event_memory_referenced_in_conversation():
+    world = _two_agent_socialising_world()
+    world.injectedEvents["evt-1"] = _injected(
+        "evt-1", simTime="2026-03-02T06:00:00+11:00",
+        lat=-37.81, lon=144.95, locationId="loc_home",
+        title="Explosion", description="a blast rattled the windows",
+        scale="wide", severity="severe")
+    ticker, fake, log = _no_runtime_ticker(world, start="2026-03-02T06:00:00")
+    # A few ticks so awareness is recorded and conversations run.
+    saw_event_talk = False
+    for _ in range(4):
+        fake.tick(1.0)
+        ticker.advance_once()
+        for e in log.query(category="conversation").entries:
+            for u in (e.detail or {}).get("utterances", []):
+                if "Explosion" in u["text"]:
+                    saw_event_talk = True
+    assert saw_event_talk, "agents should talk about the injected explosion"
+
+
+def test_injected_event_future_time_not_processed_early():
+    world = _two_agent_socialising_world()
+    world.injectedEvents["evt-future"] = _injected(
+        "evt-future", simTime="2026-03-02T09:00:00+11:00",
+        lat=-37.81, lon=144.95, title="Later Festival", scale="wide")
+    ticker, fake, log = _no_runtime_ticker(world, start="2026-03-02T06:00:00")
+    fake.tick(1.0)
+    ticker.advance_once()
+    sys_events = [e for e in log.query(category="system").entries
+                  if (e.detail or {}).get("kind") == "injected-event"]
+    assert not sys_events, "future-dated event must not fire yet"
+    assert "evt-future" not in ticker.world.processedEventIds
+
+
+def test_agentstate_new_fields_roundtrip():
+    """avoidedLocations + attractorLocation persist through to_dict/from_dict."""
+    st = AgentState(lat=-37.81, lon=144.95, presentLocationId="loc_home",
+                    needs={"hunger": 70, "energy": 70, "social": 70, "fun": 70})
+    st.avoidedLocations = {"loc_x": "2026-03-02T18:00:00+11:00"}
+    st.attractorLocation = {"locationId": "loc_fest",
+                            "expiry": "2026-03-02T20:00:00+11:00"}
+    again = AgentState.from_dict(st.to_dict())
+    assert again.avoidedLocations == {"loc_x": "2026-03-02T18:00:00+11:00"}
+    assert again.attractorLocation == {"locationId": "loc_fest",
+                                       "expiry": "2026-03-02T20:00:00+11:00"}
+
+
+def test_agentstate_defaults_backward_compatible():
+    """Old persisted items lacking the new fields still parse (empty defaults)."""
+    old = {
+        "lat": -37.81, "lon": 144.95, "presentLocationId": "loc_home",
+        "needs": {"hunger": 70, "energy": 70, "social": 70, "fun": 70},
+    }
+    st = AgentState.from_dict(old)
+    assert st.avoidedLocations == {}
+    assert st.attractorLocation is None

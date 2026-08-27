@@ -82,6 +82,27 @@ COST_CATEGORY = "model"
 LEGAL_STATUSES = ("clear", "suspected", "charged", "detained")
 EMPLOYMENT_STATUSES = ("employed", "unemployed", "suspended")
 
+# -- Injected world events (operator-created) -------------------------------
+# Geographic bounds of the simulated Melbourne. Injected events must fall
+# within these bounds (matches the engine/web map bounds).
+MELB_LAT_MIN, MELB_LAT_MAX = -38.0, -37.7
+MELB_LON_MIN, MELB_LON_MAX = 144.85, 145.10
+
+# Field length limits for the operator-supplied title/description.
+EVENT_TITLE_MAX = 120
+EVENT_DESC_MAX = 1000
+
+# Allowed enumerations for an injected event.
+EVENT_SCALES = ("local", "city", "wide")
+EVENT_SEVERITIES = ("info", "minor", "major", "severe")
+
+# Content-moderation model. A module constant so tests can patch it. Matches the
+# harness FAST_MODEL (fast + cheap). Read via a constant so tests never hit AWS.
+CONTENT_MODEL_ID = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+ANTHROPIC_VERSION = "bedrock-2023-05-31"
+# Cap the moderator response; a verdict object is tiny.
+CONTENT_MAX_TOKENS = 512
+
 # --------------------------------------------------------------------------- #
 # Lazy AWS clients (so unit tests can monkeypatch before first use)
 # --------------------------------------------------------------------------- #
@@ -121,6 +142,15 @@ def _lambda():
     return _clients["lambda"]
 
 
+def _bedrock():
+    """Lazy Bedrock Runtime client (region ap-southeast-2).
+
+    Created on first use so importing the module (and running unit tests)
+    requires no AWS credentials. Tests monkeypatch this accessor.
+    """
+    if "bedrock" not in _clients:
+        _clients["bedrock"] = boto3.client("bedrock-runtime", region_name=REGION)
+    return _clients["bedrock"]
 # --------------------------------------------------------------------------- #
 # JSON encoding (Decimal -> int/float) & HTTP envelope
 # --------------------------------------------------------------------------- #
@@ -430,6 +460,7 @@ def _route_patterns():
         ("GET", re.compile(rf"^/v1/sim/{sim}/locations$"), _handle_locations),
         ("GET", re.compile(rf"^/v1/sim/{sim}/locations/(?P<locId>[^/]+)$"), _handle_location_detail),
         ("GET", re.compile(rf"^/v1/sim/{sim}/events/decision-trail$"), _handle_decision_trail),
+        ("POST", re.compile(rf"^/v1/sim/{sim}/events$"), _handle_create_event),
         ("GET", re.compile(rf"^/v1/sim/{sim}/events$"), _handle_events),
         ("GET", re.compile(rf"^/v1/sim/{sim}/conversations/(?P<convId>[^/]+)$"), _handle_conversation_detail),
         ("GET", re.compile(rf"^/v1/sim/{sim}/conversations$"), _handle_conversations),
@@ -675,6 +706,306 @@ def _handle_events(event, sim_id, **_):
         "nextCursor": (cursor + MAX_EVENTS) if more else None,
         "count": len(window),
     })
+
+
+# --------------------------------------------------------------------------- #
+# Injected world events (operator-created) — POST /v1/sim/{simId}/events
+# --------------------------------------------------------------------------- #
+
+# Lightweight local-heuristic banned substrings used only as a last-resort
+# fallback when the Bedrock moderator is unavailable. This is intentionally
+# small and conservative: it is NOT the primary defence (the LLM is), it just
+# lets us fail-closed on obvious toxicity when the model call itself fails.
+_BANNED_SUBSTRINGS = (
+    "kill yourself", "rape", "child porn", "make a bomb", "build a bomb",
+    "how to make a bomb", "nerve agent", "gas the", "lynch",
+)
+
+
+def _extract_json_object(text: str):
+    """Parse a JSON object from a model's text response.
+
+    Tolerant of surrounding prose / markdown code fences (mirrors the harness's
+    parse_json_object). Returns a dict, or None when unparseable.
+    """
+    if not text:
+        return None
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```[a-zA-Z0-9]*\n?", "", stripped)
+        stripped = re.sub(r"\n?```$", "", stripped).strip()
+    try:
+        obj = json.loads(stripped)
+        if isinstance(obj, dict):
+            return obj
+    except (json.JSONDecodeError, ValueError):
+        pass
+    m = re.search(r"\{.*\}", stripped, re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+            if isinstance(obj, dict):
+                return obj
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return None
+
+
+def _bedrock_text(resp) -> str:
+    """Read + concatenate Claude Messages API text blocks from an invoke_model resp."""
+    raw = resp["body"].read()
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8")
+    data = json.loads(raw)
+    parts = []
+    for block in data.get("content", []) or []:
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(block.get("text", ""))
+        elif isinstance(block, str):
+            parts.append(block)
+    return "".join(parts).strip()
+
+
+def _heuristic_verdict(title: str, description: str) -> dict:
+    """Conservative local fallback verdict when the LLM moderator is unavailable.
+
+    Fail-closed on toxicity: if any banned phrase appears, mark toxic. We do NOT
+    attempt to judge plausibility/relevance heuristically (that needs the model),
+    so we allow those axes (plausible/relevant True) but the caller treats a
+    model failure as validation-degraded — toxicity is what we protect here.
+    """
+    blob = f"{title}\n{description}".lower()
+    for bad in _BANNED_SUBSTRINGS:
+        if bad in blob:
+            return {
+                "plausible": True,
+                "relevant": True,
+                "toxic": True,
+                "reason": "local heuristic flagged disallowed content "
+                          "(LLM moderator unavailable)",
+            }
+    return {
+        "plausible": True,
+        "relevant": True,
+        "toxic": False,
+        "reason": "LLM moderator unavailable; passed local heuristic checks",
+    }
+
+
+def validate_event_content(title: str, description: str) -> dict:
+    """Judge an operator-supplied event for plausibility, relevance, toxicity.
+
+    Calls Bedrock Runtime (Anthropic Claude via the Messages API) in
+    ap-southeast-2 and asks for a strict JSON verdict:
+        {plausible: bool, relevant: bool, toxic: bool, reason: str}
+
+    Fail-closed policy on model failure (exception or unparseable output):
+      - toxicity is protected: we fall back to a conservative local heuristic
+        that flags obvious disallowed phrases as toxic (reject if uncertain),
+      - plausibility/relevance are NOT rejected on model failure (allow when
+        only those axes are uncertain), so a transient Bedrock outage does not
+        block benign, well-formed events.
+    Returns a verdict dict; also carries "_degraded": True when the heuristic
+    fallback was used so the handler can annotate the response.
+    """
+    system = (
+        "You are a content moderator for a cozy, family-friendly simulated "
+        "version of the city of Melbourne, Australia, populated by fictional "
+        "software agents. An operator wants to inject a world event that will "
+        "happen at a place in the city. Judge the proposed event on three axes:\n"
+        "1. plausible: could this event plausibly happen at a real place in a "
+        "city? Reject pure fantasy or physically impossible events (e.g. 'a "
+        "dragon eats the moon', 'gravity reverses').\n"
+        "2. relevant: is it actually about something happening at a place in the "
+        "city (an incident, gathering, weather, closure, festival, etc.), and "
+        "NOT spam, gibberish, or unrelated nonsense?\n"
+        "3. toxic: does it contain hate, harassment, sexual content, graphic "
+        "gore, defamation of a real named person, or instructions for weapons "
+        "or violence? Toxic content must be rejected.\n"
+        "Respond with ONLY a single JSON object and no other text, of the exact "
+        "form: {\"plausible\": true|false, \"relevant\": true|false, "
+        "\"toxic\": true|false, \"reason\": \"short explanation\"}."
+    )
+    user = (
+        f"Event title: {title}\n"
+        f"Event description: {description}\n\n"
+        "Return the JSON verdict now."
+    )
+    body = {
+        "anthropic_version": ANTHROPIC_VERSION,
+        "max_tokens": CONTENT_MAX_TOKENS,
+        "system": system,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": user}]}],
+    }
+    try:
+        resp = _bedrock().invoke_model(
+            modelId=CONTENT_MODEL_ID,
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body).encode("utf-8"),
+        )
+        text = _bedrock_text(resp)
+        obj = _extract_json_object(text)
+        if not isinstance(obj, dict) or not all(
+            k in obj for k in ("plausible", "relevant", "toxic")
+        ):
+            # Unparseable / malformed model output -> degrade to heuristic.
+            v = _heuristic_verdict(title, description)
+            v["_degraded"] = True
+            return v
+        return {
+            "plausible": bool(obj.get("plausible")),
+            "relevant": bool(obj.get("relevant")),
+            "toxic": bool(obj.get("toxic")),
+            "reason": str(obj.get("reason") or ""),
+        }
+    except Exception:  # noqa: BLE001 - any Bedrock failure => fail-closed heuristic
+        v = _heuristic_verdict(title, description)
+        v["_degraded"] = True
+        return v
+
+
+def _event_seq_key() -> str:
+    """A lexicographically-sortable, monotonic-ish key for INJECTED_EVENT# SKs.
+
+    Zero-padded microsecond UTC timestamp + short uuid suffix so items sort by
+    creation time and never collide.
+    """
+    now = datetime.now(timezone.utc)
+    epoch_us = int(now.timestamp() * 1_000_000)
+    return f"{epoch_us:020d}#{uuid.uuid4().hex[:8]}"
+
+
+def _handle_create_event(event, sim_id, **_):
+    """POST /v1/sim/{simId}/events — inject an operator-created world event.
+
+    Structural validation (400) -> content moderation via Bedrock (422 on
+    rejection) -> persist INJECTED_EVENT# item (+ mirror EVENT# log entry) and
+    return 201.
+    """
+    body = _body(event)
+
+    # -- 1. structural validation --------------------------------------------
+    title = body.get("title")
+    if not isinstance(title, str) or not (1 <= len(title.strip()) <= EVENT_TITLE_MAX):
+        return _err(400, f"title must be a string of 1..{EVENT_TITLE_MAX} chars")
+    title = title.strip()
+
+    description = body.get("description")
+    if not isinstance(description, str) or not (1 <= len(description.strip()) <= EVENT_DESC_MAX):
+        return _err(400, f"description must be a string of 1..{EVENT_DESC_MAX} chars")
+    description = description.strip()
+
+    lat = body.get("lat")
+    lon = body.get("lon")
+    if not _is_number(lat) or not _is_number(lon):
+        return _err(400, "lat and lon must be numbers")
+    if not (MELB_LAT_MIN <= lat <= MELB_LAT_MAX and MELB_LON_MIN <= lon <= MELB_LON_MAX):
+        return _err(
+            400,
+            f"lat/lon out of Melbourne bounds "
+            f"(lat {MELB_LAT_MIN}..{MELB_LAT_MAX}, lon {MELB_LON_MIN}..{MELB_LON_MAX})",
+        )
+
+    location_id = body.get("locationId")
+    if location_id is not None and not isinstance(location_id, str):
+        return _err(400, "locationId must be a string when provided")
+
+    scale = body.get("scale", "local")
+    if scale not in EVENT_SCALES:
+        return _err(400, f"scale must be one of {list(EVENT_SCALES)}")
+
+    severity = body.get("severity", "minor")
+    if severity not in EVENT_SEVERITIES:
+        return _err(400, f"severity must be one of {list(EVENT_SEVERITIES)}")
+
+    radius_m = body.get("radiusM")
+    if radius_m is not None:
+        if not _is_number(radius_m) or radius_m < 0:
+            return _err(400, "radiusM must be a non-negative number when provided")
+
+    sim_time = body.get("simTime")
+    if sim_time is not None and not isinstance(sim_time, str):
+        return _err(400, "simTime must be an ISO-8601 string when provided")
+    if sim_time is None:
+        sim_time = _get_status(sim_id).get("simTime")
+
+    # -- 2. content moderation (Bedrock) -------------------------------------
+    verdict = validate_event_content(title, description)
+    degraded = bool(verdict.pop("_degraded", False))
+
+    # -- 3. reject on any failed axis ----------------------------------------
+    if verdict.get("toxic") or not verdict.get("plausible") or not verdict.get("relevant"):
+        reason = verdict.get("reason") or "failed content validation"
+        return _err(422, f"Event rejected: {reason}",
+                    {"data": {"accepted": False, "verdict": verdict}})
+
+    # -- 4. persist the INJECTED_EVENT# item (engine contract) ---------------
+    event_id = uuid.uuid4().hex
+    created_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    sk = f"INJECTED_EVENT#{_event_seq_key()}"
+    item = {
+        "PK": _pk(sim_id),
+        "SK": sk,
+        "schemaVersion": SCHEMA_VERSION,
+        "id": event_id,
+        "type": "injected_event",
+        "simTime": sim_time,
+        "lat": _to_decimal(float(lat)),
+        "lon": _to_decimal(float(lon)),
+        "locationId": location_id,
+        "title": title,
+        "description": description,
+        "scale": scale,
+        "severity": severity,
+        "radiusM": _to_decimal(float(radius_m)) if radius_m is not None else None,
+        "createdAt": created_at,
+        "verdict": verdict,
+    }
+    _table().put_item(Item=item)
+
+    # -- 5. mirror a human-readable EVENT# log entry (nice-to-have) -----------
+    # Matches the base-table event-item shape (_event_view / _load_events):
+    # seq (zero-padded in SK), simTime, realTime, category, agents, locationId,
+    # description, detail, plus GSI1 keys so it surfaces in GET /events by
+    # category. seq derives from the same epoch-microsecond value as the SK.
+    try:
+        seq = int(sk.split("#", 1)[1].split("#", 1)[0])
+        event_sim_time = sim_time or created_at
+        log_item = {
+            "PK": _pk(sim_id),
+            "SK": f"EVENT#{str(seq).zfill(20)}",
+            "schemaVersion": SCHEMA_VERSION,
+            "seq": seq,
+            "simTime": event_sim_time,
+            "realTime": created_at,
+            "category": "injected",
+            "agents": [],
+            "locationId": location_id,
+            "description": f"Operator injected event: {title}",
+            "detail": {
+                "kind": "injected_event",
+                "injectedEventId": event_id,
+                "title": title,
+                "scale": scale,
+                "severity": severity,
+            },
+            "GSI1PK": f"{_pk(sim_id)}#CAT#injected",
+            "GSI1SK": f"{event_sim_time}#{seq}",
+        }
+        _table().put_item(Item=log_item)
+    except Exception:  # noqa: BLE001 - the INJECTED_EVENT# item is the critical contract
+        pass
+
+    resp_verdict = dict(verdict)
+    if degraded:
+        resp_verdict["degraded"] = True
+    return _ok({
+        "accepted": True,
+        "id": event_id,
+        "simTime": sim_time,
+        "verdict": resp_verdict,
+    }, status=201)
 
 
 def _conversation_view(e: dict) -> dict:

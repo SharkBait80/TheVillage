@@ -22,6 +22,9 @@ from .controller import Simulation_Controller
 from .crime import Crime_Engine
 from .economy import Economy_Engine
 from .eventlog import Event_Log
+from .events_inject import (Event_Propagation, Injected_Event,
+                            add_sim_minutes, AVOID_TTL_MIN, ATTRACT_TTL_MIN)
+from .heuristics import heuristic_decision, local_utterance
 from .law import Law_Enforcement_Engine
 from .models import (Action, ActionType, Agent, Config, EmploymentStatus, Job,
                      LegalStatus, Location, SimStatus, TargetType)
@@ -81,6 +84,12 @@ class WorldState:
     agents: Dict[str, Agent] = field(default_factory=dict)
     locations: Dict[str, Location] = field(default_factory=dict)
     jobs: Dict[str, Job] = field(default_factory=dict)
+    # Operator-injected world events (explosion/festival/…), keyed by event id.
+    # Populated from DynamoDB items with SK ``INJECTED_EVENT#<seq>``.
+    injectedEvents: Dict[str, "Injected_Event"] = field(default_factory=dict)
+    # Ids of injected events already processed by the propagation engine, so we
+    # only fan each event out to the population once.
+    processedEventIds: set = field(default_factory=set)
 
     def occupancy(self, location_id: str, radius_m: float = 25.0) -> int:
         """Count agents within radius_m of the location (Req 3.5)."""
@@ -132,6 +141,8 @@ class Ticker:
         self.crime = crime or Crime_Engine()
         self.law = law
         self._persist = persist or (lambda a: None)
+        # Injected-event propagation engine (deterministic, pure).
+        self.propagation = Event_Propagation()
         # Short-term memory mirror: agentId -> recent memory lines (strings).
         # Gives the harness continuity of thought across ticks even when
         # AgentCore Memory is unavailable/degraded. Bounded per agent.
@@ -180,6 +191,11 @@ class Ticker:
         # 2. movement progress + 3. end finished actions -> decision cycles
         for agent in self.world.agents.values():
             self._progress_action(agent, tick)
+
+        # 2b. process any NEW injected world events once (explosion/festival/…):
+        # propagate awareness, push memories, and set avoidance/attraction hints
+        # BEFORE decisions so behaviour reacts this same tick.
+        self._process_injected_events(sim_iso)
 
         # 3a. day-plan on wake / new day (emits a `planning` thought event).
         sim_date = sim_iso[:10]
@@ -458,15 +474,15 @@ class Ticker:
 
     def _apply_decision(self, agent: Agent, resp: Optional[Dict[str, Any]],
                         sim_iso: str) -> None:
-        """Apply a harness decision response to the agent + log the thought."""
+        """Apply a harness decision response to the agent + log the thought.
+
+        When ``resp`` is None (no runtime, harness error, or throttle) we do NOT
+        idle forever: we run the deterministic heuristic decision engine so
+        agents keep living — eating, sleeping, working, and (crucially)
+        socialising toward co-located agents so conversations still form.
+        """
         if resp is None:
-            # fallback idle (Req 6.7 / 6.8)
-            agent.state.currentAction = Action.from_dict({
-                "type": "idle", "targetType": "location",
-                "targetId": agent.state.presentLocationId or agent.persona.homeLocationId,
-                "expectedDurationMin": 10, "startedSimTime": sim_iso})
-            self.event_log.append(sim_iso, "action", f"idle fallback for {agent.id}",
-                                  agents=[agent.id], detail={"kind": "fallback"})
+            self._apply_heuristic_decision(agent, sim_iso)
             return
         self._record_usage(resp, sim_iso, agent.id)
         action_dict = resp.get("action")
@@ -482,17 +498,7 @@ class Ticker:
                 "type": "idle", "targetType": "location",
                 "targetId": agent.state.presentLocationId or agent.persona.homeLocationId,
                 "expectedDurationMin": 10, "startedSimTime": sim_iso})
-        if action.type == ActionType.TRAVEL and action.targetType == TargetType.LOCATION:
-            dest = self.world.locations.get(action.targetId)
-            if dest is not None:
-                try:
-                    route = self.movement.compute_route(
-                        agent.state.lat, agent.state.lon, dest)
-                    action.route = route.coords
-                    action.travelMode = route.mode
-                    action.expectedDurationMin = route.duration_min
-                except Exception:  # noqa: BLE001 — out-of-bounds etc.
-                    pass
+        self._attach_travel_route(agent, action)
         agent.state.currentAction = action
         # Capture a compact, human-readable "thought process": the LLM's
         # reasoning plus a snapshot of what the agent perceived (Req 14.4).
@@ -521,6 +527,71 @@ class Ticker:
         self._remember(agent.id,
                        f"{sim_iso}: decided to {action.type.value}"
                        + (f" — {reasoning}" if reasoning else ""))
+
+    def _attach_travel_route(self, agent: Agent, action: Action) -> None:
+        """Attach a straight-line route + travel mode/duration to a travel action.
+
+        No-op for non-travel or non-location targets; defensive against
+        out-of-bounds destinations (leaves the action untouched on failure).
+        """
+        if action.type != ActionType.TRAVEL or action.targetType != TargetType.LOCATION:
+            return
+        dest = self.world.locations.get(action.targetId)
+        if dest is None:
+            return
+        try:
+            route = self.movement.compute_route(
+                agent.state.lat, agent.state.lon, dest)
+            action.route = route.coords
+            action.travelMode = route.mode
+            action.expectedDurationMin = route.duration_min
+        except Exception:  # noqa: BLE001 — out-of-bounds etc.
+            pass
+
+    def _apply_heuristic_decision(self, agent: Agent, sim_iso: str) -> None:
+        """Deterministic fallback decision when the harness returns nothing.
+
+        Produces a sensible action from needs/time/location/co-location, builds
+        it via ``Action.from_dict``, attaches a travel route, and logs an
+        ``action`` event with detail kind ``heuristic``. Falls back to a genuine
+        idle only if the heuristic itself fails.
+        """
+        try:
+            action_dict = heuristic_decision(agent, self.world, sim_iso)
+            action_dict.setdefault("startedSimTime", sim_iso)
+            action = Action.from_dict(action_dict)
+        except Exception as e:  # noqa: BLE001 — never abort a tick
+            print(f"[engine] heuristic error agent={agent.id}: {e}", flush=True)
+            agent.state.currentAction = Action.from_dict({
+                "type": "idle", "targetType": "location",
+                "targetId": agent.state.presentLocationId or agent.persona.homeLocationId,
+                "expectedDurationMin": 10, "startedSimTime": sim_iso})
+            self.event_log.append(sim_iso, "action", f"idle fallback for {agent.id}",
+                                  agents=[agent.id], detail={"kind": "fallback"})
+            return
+        self._attach_travel_route(agent, action)
+        agent.state.currentAction = action
+        st = agent.state
+        perception = {
+            "simTime": sim_iso,
+            "locationId": st.presentLocationId,
+            "needs": dict(st.needs) if st.needs else {},
+            "cash": float(st.cash),
+            "legalStatus": st.legalStatus.value,
+            "employmentStatus": st.employmentStatus.value,
+        }
+        self.event_log.append(
+            sim_iso, "action",
+            f"{agent.id} -> {action.type.value} (heuristic)",
+            agents=[agent.id],
+            detail={
+                "kind": "heuristic",
+                "action": action.to_dict(),
+                "reasoning": "heuristic decision (no LLM runtime)",
+                "perceptionInput": perception,
+            })
+        self._remember(agent.id,
+                       f"{sim_iso}: decided to {action.type.value} (heuristic)")
 
     # -- planning & reflection (thought logging) ---------------------------
     def _should_plan(self, agent: Agent, sim_iso: str, sim_date: str) -> bool:
@@ -640,10 +711,11 @@ class Ticker:
 
         Budget/availability: only runs when a runtime is present and the budget
         allows a decision-class invocation; utterance failures truncate the
-        conversation gracefully (Req 10.8).
+        conversation gracefully (Req 10.8). When no runtime is configured, a
+        deterministic local utterance fallback keeps conversations flowing so
+        the world stays alive without an LLM.
         """
-        if self.runtime is None:
-            return 0
+        use_local = self.runtime is None
 
         # Index agents by their current location for co-location checks.
         by_location: Dict[str, List[Agent]] = {}
@@ -668,7 +740,7 @@ class Ticker:
             colocated = [a for a in by_location.get(loc, []) if a.id != agent.id]
             if not colocated:
                 continue
-            if not self.budget.can_start_decision():
+            if not use_local and not self.budget.can_start_decision():
                 break
 
             convo_counter += 1
@@ -684,7 +756,22 @@ class Ticker:
             for pid in convo.participants:
                 in_conversation.add(pid)
 
-            def utterance_provider(conversation, speaker_id, _self=self, _sim=sim_iso):
+            def utterance_provider(conversation, speaker_id, _self=self,
+                                   _sim=sim_iso, _local=use_local):
+                # Local, LLM-free fallback: cheap deterministic small talk that
+                # can reference remembered injected events. Keeps conversations
+                # forming (>=2 utterances) when the harness is unavailable.
+                if _local:
+                    persona = _self.world.agents.get(speaker_id)
+                    if persona is None:
+                        return None
+                    loc_obj = _self.world.locations.get(
+                        persona.state.presentLocationId or "")
+                    loc_name = loc_obj.name if loc_obj is not None else "here"
+                    turn_index = len(conversation.utterances)
+                    mem = [t for t in _self._stm.get(speaker_id, [])]
+                    return local_utterance(persona.persona, loc_name,
+                                           turn_index, _sim, memory_lines=mem)
                 payload = {
                     "op": "utterance",
                     "simId": _self.world.config.simId,
@@ -711,8 +798,12 @@ class Ticker:
                 text = resp.get("utterance")
                 return text if isinstance(text, str) and text.strip() else None
 
+            # Ensure the local fallback produces at least MIN_UTTERANCES so the
+            # conversation is persisted (the harness path self-limits via None).
+            max_u = 4 if use_local else 10
             try:
-                self.social.run_conversation(convo, utterance_provider)
+                self.social.run_conversation(convo, utterance_provider,
+                                             max_utterances=max_u)
             except Exception:
                 convo.truncated = True
 
@@ -746,6 +837,79 @@ class Ticker:
                     self._remember(pid, f"{sim_iso}: talked at {loc} — {snippet}")
 
         return started
+
+    # -- injected world events (Task 2) ------------------------------------
+    def _process_injected_events(self, sim_iso: str) -> int:
+        """Propagate any NEW injected events once. Never aborts a tick.
+
+        For each unprocessed event in ``world.injectedEvents`` whose simTime has
+        arrived, run the propagation engine, push a memory line into each aware
+        agent's short-term memory, set avoidance/attraction hints that bias the
+        heuristic, and emit a ``system`` event summarising how many agents became
+        aware. Returns the number of events processed this tick.
+        """
+        events = getattr(self.world, "injectedEvents", None)
+        if not events:
+            return 0
+        processed = 0
+        for event_id in sorted(events.keys()):
+            if event_id in self.world.processedEventIds:
+                continue
+            event = events[event_id]
+            # Only fire once the event's sim time has been reached.
+            try:
+                if event.simTime and event.simTime > sim_iso:
+                    continue
+            except TypeError:
+                pass
+            try:
+                self._propagate_one_event(event, sim_iso)
+            except Exception as e:  # noqa: BLE001 — never abort a tick
+                print(f"[engine] injected-event error id={event_id}: {e}",
+                      flush=True)
+            finally:
+                self.world.processedEventIds.add(event_id)
+                processed += 1
+        return processed
+
+    def _propagate_one_event(self, event: "Injected_Event", sim_iso: str) -> None:
+        result = self.propagation.propagate(event, self.world)
+        avoid_expiry = add_sim_minutes(sim_iso, AVOID_TTL_MIN)
+        attract_expiry = add_sim_minutes(sim_iso, ATTRACT_TTL_MIN)
+        for aid in result.aware_agent_ids:
+            agent = self.world.agents.get(aid)
+            if agent is None:
+                continue
+            # Push the event into short-term memory so decisions/utterances can
+            # reference it (agents "talk about" the explosion/festival).
+            self._remember(aid, result.memory_line)
+            # Scary events near a known location -> avoid it for a while.
+            if result.scary and result.avoided_location_id:
+                agent.state.avoidedLocations[result.avoided_location_id] = avoid_expiry
+            # Positive events -> some agents become attracted to the location.
+            if result.attractor_location_id and not result.scary:
+                agent.state.attractorLocation = {
+                    "locationId": result.attractor_location_id,
+                    "expiry": attract_expiry,
+                }
+        self.event_log.append(
+            sim_iso, "system",
+            f"injected event '{event.title or event.id}' "
+            f"({event.scale}/{event.severity}) — {result.aware_count} agents aware",
+            location_id=event.locationId,
+            detail={
+                "kind": "injected-event",
+                "eventId": event.id,
+                "title": event.title,
+                "scale": event.scale,
+                "severity": event.severity,
+                "awareCount": result.aware_count,
+                "awareAgentIds": sorted(result.aware_agent_ids),
+                "scary": result.scary,
+                "positive": result.positive,
+                "avoidedLocationId": result.avoided_location_id,
+                "attractorLocationId": result.attractor_location_id,
+            })
 
 
 __all__ = ["Ticker", "WorldState", "TickReport", "AgentRuntimeClient"]
