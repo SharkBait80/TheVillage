@@ -37,7 +37,7 @@ export function LoginScreen({ onSuccess, notice }: LoginScreenProps) {
     <div className="login-screen">
       <form className="login-card" onSubmit={handleSubmit} aria-labelledby="login-title">
         <div className="login-emoji" aria-hidden="true">
-          🏘️✨
+          MV
         </div>
         <h1 id="login-title" className="login-title">
           Melbourne Agent Village
@@ -86,7 +86,7 @@ export function LoginScreen({ onSuccess, notice }: LoginScreenProps) {
         )}
 
         <button className="btn btn-login" type="submit" disabled={busy}>
-          {busy ? 'Signing in…' : 'Sign in 🌸'}
+          {busy ? 'Signing in…' : 'Sign in'}
         </button>
       </form>
     </div>

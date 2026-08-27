@@ -6,6 +6,12 @@ web/dist/
 infra/cdk.out/
 infra/dist/
 
+# Playwright
+web/test-results/
+web/playwright-report/
+web/blob-report/
+web/.playwright/
+
 # Python caches
 **/__pycache__/
 *.pyc

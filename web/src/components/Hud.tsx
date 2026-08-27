@@ -25,9 +25,9 @@ function formatSimTime(iso: string | null): string {
 }
 
 const STATUS_LABEL: Record<SimStatus, string> = {
-  running: '● Running',
-  paused: '⏸ Paused',
-  stopped: '■ Stopped',
+  running: 'Running',
+  paused: 'Paused',
+  stopped: 'Stopped',
 }
 
 /** Header/HUD — Simulated_Time, Acceleration_Factor, status (Req15.8). */
@@ -36,7 +36,7 @@ export function Hud({ simTime, accel, status }: HudProps) {
     <>
       <div className="brand">
         <span className="sparkle" aria-hidden="true">
-          ✨🏙️
+          MV
         </span>
         Melbourne Agent Village
       </div>

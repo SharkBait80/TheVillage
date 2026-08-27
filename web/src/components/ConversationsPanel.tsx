@@ -82,7 +82,7 @@ export function ConversationsPanel({ onClose, onSelectAgent, agentNames }: Conve
       <button className="panel-close" onClick={onClose} aria-label="Close conversations">
         ×
       </button>
-      <h2>💬 Conversations</h2>
+      <h2>Conversations</h2>
       <p className="subtitle">What the villagers are saying to each other</p>
 
       {error && <p role="alert">{error}</p>}

@@ -31,10 +31,10 @@ function isEnabled(command: ControlCommand, status: SimStatus | null): boolean {
 }
 
 const COMMANDS: { cmd: ControlCommand; label: string; cls: string }[] = [
-  { cmd: 'start', label: '▶ Start', cls: 'btn-start' },
-  { cmd: 'pause', label: '⏸ Pause', cls: 'btn-pause' },
-  { cmd: 'resume', label: '⏵ Resume', cls: 'btn-resume' },
-  { cmd: 'stop', label: '■ Stop', cls: 'btn-stop' },
+  { cmd: 'start', label: 'Start', cls: 'btn-start' },
+  { cmd: 'pause', label: 'Pause', cls: 'btn-pause' },
+  { cmd: 'resume', label: 'Resume', cls: 'btn-resume' },
+  { cmd: 'stop', label: 'Stop', cls: 'btn-stop' },
 ]
 
 export function ControlBar({ status, onAccepted }: ControlBarProps) {

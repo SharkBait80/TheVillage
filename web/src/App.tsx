@@ -71,7 +71,7 @@ export default function App() {
         <div className="login-screen">
           <div className="login-card" aria-busy="true">
             <div className="login-emoji" aria-hidden="true">
-              🏘️✨
+              MV
             </div>
             <p className="login-sub">Signing in…</p>
           </div>
@@ -145,14 +145,14 @@ function VillageApp() {
           aria-pressed={showList}
           onClick={() => setShowList((v) => !v)}
         >
-          {showList ? '🗺 Map view' : '📋 List view'}
+          {showList ? 'Map view' : 'List view'}
         </button>
         <button
           className="btn btn-toggle"
           aria-pressed={showConversations}
           onClick={() => setShowConversations((v) => !v)}
         >
-          {showConversations ? '✖ Close chats' : '💬 Conversations'}
+          {showConversations ? 'Close chats' : 'Conversations'}
         </button>
         {config.mock && (
           <span className="hud-chip" aria-label="Running in mock mode">
