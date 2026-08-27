@@ -5,7 +5,7 @@ from village.budget import Budget_Accountant
 from village.clock import Simulation_Clock, localize
 from village.controller import Simulation_Controller
 from village.eventlog import Event_Log
-from village.models import (Agent, AgentState, Budget, Config, EmploymentStatus,
+from village.models import (Agent, AgentState, ActionType, Budget, Config, EmploymentStatus,
                             LegalStatus, Location, LocationCategory, ModelPrice,
                             OpeningHours, Persona, SimStatus)
 from village.ticker import Ticker, WorldState
@@ -184,7 +184,7 @@ def test_decision_event_carries_reasoning_and_perception():
     controller.start()
     budget = Budget_Accountant(world.config.budget)
     log = Event_Log()
-    runtime = ReasoningRuntime(reasoning="need to rest")
+    runtime = ReasoningRuntime(action_type="leisure", reasoning="need to rest")
     ticker = Ticker(world=world, clock=clock, controller=controller,
                     runtime=runtime, event_log=log, budget=budget)
     fake.tick(1.0)
@@ -201,6 +201,45 @@ def test_decision_event_carries_reasoning_and_perception():
     trail = log.decision_trail(action_events[-1].seq)
     assert trail is not None
     assert trail["reasoning"] == "need to rest"
+
+
+def test_harness_idle_is_overridden_by_heuristic():
+    """A harness that returns a bare 'idle' (its safe-fallback on LLM failure)
+    must NOT leave the agent idling — the engine substitutes a heuristic
+    decision so the world stays alive. Regression for the production bug where
+    every agent sat at 'idle' because the harness kept returning idle."""
+    world = make_world()
+    # Add a reachable food location so the hungry heuristic has a real,
+    # non-idle option (travel to eat) — mirrors the seeded world's variety.
+    world.locations["loc_cafe"] = Location(
+        id="loc_cafe", name="Cafe", category=LocationCategory.FOOD,
+        lat=-37.812, lon=144.952, capacity=20,
+        hours=[OpeningHours("00:00", "23:59")] * 7)
+    # Make the agent hungry so the heuristic has a clear, non-idle choice.
+    agent = next(iter(world.agents.values()))
+    agent.state.needs["hunger"] = 5
+    fake = FakeClock()
+    clock = Simulation_Clock(
+        localize(datetime.fromisoformat("2026-03-02T12:00:00")),
+        acceleration_factor=60, real_clock=fake)
+    controller = Simulation_Controller(world.config)
+    controller.start()
+    budget = Budget_Accountant(world.config.budget)
+    log = Event_Log()
+    # Harness always returns idle (simulating a broken/unparseable LLM path).
+    runtime = ReasoningRuntime(action_type="idle", reasoning="")
+    ticker = Ticker(world=world, clock=clock, controller=controller,
+                    runtime=runtime, event_log=log, budget=budget)
+    fake.tick(1.0)
+    ticker.advance_once()
+
+    # The applied action must be a heuristic (not an accepted idle).
+    heuristic_events = [e for e in log.query(category="action").entries
+                        if (e.detail or {}).get("kind") == "heuristic"]
+    assert heuristic_events, "expected a heuristic action to override harness idle"
+    # And the agent is no longer idling.
+    assert agent.state.currentAction is not None
+    assert agent.state.currentAction.type != ActionType.IDLE
 
 
 def _two_agent_socialising_world():

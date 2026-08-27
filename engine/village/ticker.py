@@ -486,7 +486,17 @@ class Ticker:
             return
         self._record_usage(resp, sim_iso, agent.id)
         action_dict = resp.get("action")
-        if not action_dict:
+        # When the harness yields nothing actionable, OR returns a bare "idle"
+        # (its own safe-fallback when the LLM call fails / output is
+        # unparseable / it genuinely stalls), we do NOT let the agent idle
+        # forever. We run the deterministic heuristic instead so the world
+        # stays alive — agents eat, work, travel, and socialise (which is what
+        # actually forms conversations). A genuine idle only survives when the
+        # heuristic itself also decides idle is the right call (e.g. detained,
+        # or deep night with high energy).
+        harness_type = (action_dict or {}).get("type")
+        if not action_dict or harness_type == ActionType.IDLE.value:
+            self._apply_heuristic_decision(agent, sim_iso)
             return
         action_dict.setdefault("startedSimTime", sim_iso)
         # Attach a straight-line route for travel actions so the SPA animates
