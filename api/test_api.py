@@ -58,19 +58,58 @@ class FakeTable:
         cond = kwargs["KeyConditionExpression"]
         # We introspect the boto3 condition object to extract the target values.
         results = []
+        sort_key = None
         if index_name == "GSI1":
             want = _eq_value(cond)
             results = [i for i in self.items.values() if i.get("GSI1PK") == want]
+            sort_key = "GSI1SK"
         elif index_name == "GSI2":
             want = _eq_value(cond)
             results = [i for i in self.items.values() if i.get("GSI2PK") == want]
+            sort_key = "GSI2SK"
         else:
             pk, prefix = _pk_prefix(cond)
             results = [
                 i for i in self.items.values()
                 if i.get("PK") == pk and str(i.get("SK", "")).startswith(prefix)
             ]
-        return {"Items": [dict(i) for i in results]}
+            sort_key = "SK"
+
+        # Honour ScanIndexForward (default True/ascending) so reverse "recent"
+        # queries behave like real DynamoDB.
+        forward = kwargs.get("ScanIndexForward", True)
+        results.sort(key=lambda i: str(i.get(sort_key, "")), reverse=not forward)
+
+        # Honour ExclusiveStartKey + Limit for bounded pagination. The start key
+        # carries the sort-key value of the last item returned on the prior page.
+        start = kwargs.get("ExclusiveStartKey")
+        if start is not None:
+            start_val = str(start.get(sort_key, ""))
+            trimmed = []
+            seen = False
+            for i in results:
+                if not seen:
+                    if str(i.get(sort_key, "")) == start_val:
+                        seen = True
+                    continue
+                trimmed.append(i)
+            results = trimmed
+
+        limit = kwargs.get("Limit")
+        lek = None
+        if limit is not None and len(results) > limit:
+            page = results[:limit]
+            last = page[-1]
+            lek = {
+                "PK": last.get("PK"), "SK": last.get("SK"),
+                sort_key: last.get(sort_key),
+            }
+            results = page
+
+        out = {"Items": [dict(i) for i in results]}
+        if lek is not None:
+            out["LastEvaluatedKey"] = lek
+        return out
 
 
 def _eq_value(cond):
@@ -625,6 +664,55 @@ def test_conversations_filter_by_agent(fake_table):
     status, body = parse(index.handler(ev))
     assert status == 200
     assert len(body["data"]["conversations"]) == 1
+
+
+def test_conversations_returns_newest_first_and_paginates(fake_table):
+    """The default feed uses a bounded reverse-ordered GSI1 query: it must
+    return the newest MAX_EVENTS conversations, newest-first, and signal `more`
+    without draining the whole partition (regression for the list-conversations
+    timeout)."""
+    seed_status(fake_table)
+    total = index.MAX_EVENTS + 25
+    for i in range(total):
+        # Ascending seq/time; higher seq == newer.
+        _seed_conversation(
+            fake_table, seq=1000 + i,
+            sim_time=f"2026-03-02T09:{i // 60:02d}:{i % 60:02d}+11:00",
+            conv_id=f"c{i}", participants=["agent_01", "agent_02"],
+            utterances=[{"speaker": "agent_01", "text": f"msg {i}"}])
+
+    ev = make_event("GET", "/v1/sim/melb/conversations")
+    status, body = parse(index.handler(ev))
+    assert status == 200
+    convos = body["data"]["conversations"]
+    # Capped at MAX_EVENTS with a `more` flag + nextCursor for pagination.
+    assert len(convos) == index.MAX_EVENTS
+    assert body["data"]["more"] is True
+    assert body["data"]["nextCursor"] == index.MAX_EVENTS
+    # Newest-first: the very newest conversation (highest seq) is first.
+    assert convos[0]["id"] == f"c{total - 1}"
+    assert convos[0]["seq"] == 1000 + total - 1
+    # Strictly descending by seq.
+    seqs = [c["seq"] for c in convos]
+    assert seqs == sorted(seqs, reverse=True)
+
+
+def test_conversations_skips_unresolved_entries(fake_table):
+    """Non-'conversation-ended' entries carry no transcript and must be filtered
+    out even under the bounded reverse-query fast path."""
+    seed_status(fake_table)
+    # An in-progress entry (no transcript) interleaved with a resolved one.
+    seed_event(fake_table, seq=20, category="conversation",
+               sim_time="2026-03-02T09:10:00+11:00",
+               detail={"kind": "conversation-started"})
+    _seed_conversation(fake_table, seq=21, sim_time="2026-03-02T09:11:00+11:00",
+                       conv_id="c-ok", participants=["agent_01", "agent_02"],
+                       utterances=[{"speaker": "agent_01", "text": "hi"}])
+    ev = make_event("GET", "/v1/sim/melb/conversations")
+    status, body = parse(index.handler(ev))
+    assert status == 200
+    convos = body["data"]["conversations"]
+    assert [c["id"] for c in convos] == ["c-ok"]
 
 
 def test_conversation_detail_by_id(fake_table):

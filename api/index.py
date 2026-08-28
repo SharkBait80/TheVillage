@@ -59,6 +59,9 @@ MELBOURNE_TZ = "Australia/Melbourne"
 # Event-log query cap (Req 14.2).
 MAX_EVENTS = 500
 
+# Upper bound on items evaluated per DynamoDB page for bounded "recent" queries.
+MAX_QUERY_PAGE = 1000
+
 # Agent-detail recent-event count (Req 15.6).
 AGENT_RECENT_EVENTS = 10
 
@@ -1034,6 +1037,12 @@ def _handle_conversations(event, sim_id, **_):
     Returns up to MAX_EVENTS conversation transcripts (participants + utterance
     text), most recent first, plus a `more`/`nextCursor` for pagination. Empty
     result (not an error) when none match.
+
+    Performance: the default feed (no agentId / time window / cursor) is served
+    by a bounded, reverse-ordered GSI1 query that fetches only the newest
+    MAX_EVENTS conversations instead of draining the entire `conversation`
+    partition into memory. This fixes the list-conversations timeout that grew
+    with the number of conversations.
     """
     q = _query(event)
     agent_id = q.get("agentId")
@@ -1045,11 +1054,29 @@ def _handle_conversations(event, sim_id, **_):
         cursor = 0
     cursor = max(0, cursor)
 
+    def _is_ended(e):
+        return (e.get("detail") or {}).get("kind") == "conversation-ended"
+
+    # Fast path: default feed (no participant filter, no time window, first
+    # page). Fetch only the newest MAX_EVENTS via a bounded reverse query.
+    if not agent_id and from_st is None and to_st is None and cursor == 0:
+        window, more = _query_gsi1_recent(
+            sim_id, "conversation", MAX_EVENTS, keep=_is_ended,
+        )
+        # Already newest-first from the descending index scan.
+        return _ok({
+            "conversations": [_conversation_view(e) for e in window],
+            "more": more,
+            "nextCursor": MAX_EVENTS if more else None,
+            "count": len(window),
+        })
+
+    # Filtered / paginated path: agent partitions (GSI2) and time windows are
+    # bounded, so the load-then-filter approach is acceptable here.
     entries = _load_events(sim_id, category="conversation", agent_id=agent_id,
                            from_st=from_st, to_st=to_st)
     # Only fully-resolved conversations carry a transcript.
-    entries = [e for e in entries
-               if (e.get("detail") or {}).get("kind") == "conversation-ended"]
+    entries = [e for e in entries if _is_ended(e)]
     # Most recent first.
     entries.sort(key=lambda e: (e.get("simTime") or "", int(e.get("seq") or 0)),
                  reverse=True)
@@ -1352,6 +1379,56 @@ def _query_gsi1(sim_id, category):
             break
         kwargs["ExclusiveStartKey"] = lek
     return items
+
+
+def _query_gsi1_recent(sim_id, category, limit, keep=None, max_scanned=None):
+    """Fetch the newest `limit` GSI1 items for a category without draining the
+    whole partition.
+
+    GSI1SK is "{simTime}#{seq20}", so descending sort-key order (ScanIndexForward
+    =False) yields newest-first. We page with a bounded loop, applying the
+    optional `keep` predicate in-app, and stop as soon as we have `limit` kept
+    items (or the partition is exhausted, or we hit `max_scanned` evaluated
+    items). This replaces the previous "read every page then slice" strategy
+    that timed out as the event count grew (the list-conversations timeout).
+
+    Returns (kept_items, more) where `more` indicates that additional matching
+    items likely remain beyond the returned window.
+    """
+    keep = keep or (lambda _e: True)
+    # Over-fetch a little: Limit is applied before our in-app `keep` filter, so
+    # request a margin so a single page usually satisfies `limit`.
+    page_limit = max(limit + 1, min(limit * 2, MAX_QUERY_PAGE))
+    kept = []
+    scanned = 0
+    start_key = None
+    while True:
+        kwargs = {
+            "IndexName": "GSI1",
+            "KeyConditionExpression": Key("GSI1PK").eq(f"{_pk(sim_id)}#CAT#{category}"),
+            "ScanIndexForward": False,  # newest first
+            "Limit": page_limit,
+        }
+        if start_key:
+            kwargs["ExclusiveStartKey"] = start_key
+        resp = _table().query(**kwargs)
+        items = resp.get("Items", [])
+        scanned += len(items)
+        for e in items:
+            if keep(e):
+                kept.append(e)
+                # We need one extra kept item to know whether `more` is true.
+                if len(kept) > limit:
+                    return kept[:limit], True
+        start_key = resp.get("LastEvaluatedKey")
+        # Only an absent LastEvaluatedKey means end-of-data (an empty page can
+        # still carry a continuation token when everything was filtered out).
+        if not start_key:
+            break
+        if max_scanned is not None and scanned >= max_scanned:
+            # Bounded: assume more may remain rather than scanning unboundedly.
+            return kept[:limit], len(kept) >= limit
+    return kept[:limit], False
 
 
 def _query_gsi2(sim_id, agent_id):
