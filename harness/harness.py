@@ -67,6 +67,11 @@ REFLECT_MIN, REFLECT_MAX = 1, 5
 SRC_MEM_MIN, SRC_MEM_MAX = 1, 20
 UTTERANCE_MAX_CHARS = 500
 
+# Utterances are the one creative op: a higher sampling temperature reduces
+# canned, on-distribution filler ("Sounds good!", "How about you?") and yields
+# distinct voices. Structured ops (decision/plan/reflect) stay deterministic.
+UTTERANCE_TEMPERATURE = 0.85
+
 # max_tokens ceilings per op (bounded output; keeps cost predictable).
 MAX_TOKENS = {
     "decision": 512,
@@ -170,10 +175,15 @@ def invoke_with_retry(fn: Callable[[], Any],
 # --------------------------------------------------------------------------- #
 def call_bedrock(model_id: str, system: str, user_text: str, max_tokens: int,
                  client=None, sleep=time.sleep,
-                 rng: Optional[random.Random] = None) -> Tuple[str, int, int]:
+                 rng: Optional[random.Random] = None,
+                 temperature: Optional[float] = None) -> Tuple[str, int, int]:
     """Invoke a Claude model via the Bedrock Messages API.
 
     Returns (text, input_tokens, output_tokens). Throttling is retried (Req 18.7).
+
+    ``temperature`` (optional) raises output variety for creative ops such as
+    conversation utterances; decision/plan/reflect leave it unset (deterministic
+    default) so structured outputs stay stable.
     """
     client = client or get_bedrock_client()
     body = {
@@ -182,6 +192,8 @@ def call_bedrock(model_id: str, system: str, user_text: str, max_tokens: int,
         "system": system,
         "messages": [{"role": "user", "content": [{"type": "text", "text": user_text}]}],
     }
+    if temperature is not None:
+        body["temperature"] = max(0.0, min(1.0, float(temperature)))
 
     def _do():
         return client.invoke_model(
@@ -474,16 +486,81 @@ def _mbti_style_hint(persona: Dict[str, Any]) -> str:
 
 
 def _turn_role_directive(turn_index: int, total_turns: int) -> str:
-    """Where the speaker is in the exchange, so the model opens, develops, or
-    closes appropriately instead of re-greeting or trailing off."""
+    """Where the speaker is in the exchange and how DEEP to go.
+
+    An escalating "depth ladder" (research: LLMs Get Lost in Multi-Turn
+    Conversation, arXiv:2505.06120 — models need explicit steering to deepen
+    rather than drift or restart). Early turns get concrete, middle turns raise
+    stakes/opinion/personal history, late turns reach a small resolution, and
+    the final turn closes warmly without opening anything new.
+    """
     if turn_index <= 0:
-        return ("You speak FIRST. Greet them by name and raise ONE topic or ask "
-                "ONE genuine question. Do not answer questions that were not asked.")
+        return ("You speak FIRST. Greet them by name ONCE, then raise ONE real "
+                "topic or ask ONE genuine, specific question — something only you "
+                "would bring up. Do not answer questions that were not asked.")
     if total_turns and turn_index >= total_turns - 1:
         return ("The conversation is WRAPPING UP. Acknowledge the last thing "
-                "said and close warmly and naturally. Do NOT open a new topic.")
-    return ("Respond DIRECTLY to their last line, then move the conversation "
-            "forward with a specific detail or a follow-up question.")
+                "they said and close warmly and naturally — a goodbye, a plan to "
+                "meet again, or a parting thought. Do NOT open a new topic and "
+                "do NOT ask a fresh question.")
+    if turn_index <= 3:
+        return ("Respond DIRECTLY to their last line, then get CONCRETE: share a "
+                "specific detail, name, or example, or ask what they mean. Stay "
+                "on the SAME topic — build on it, do not switch.")
+    if total_turns and turn_index >= total_turns - 2:
+        return ("Respond to their last line, then start steering toward a small "
+                "RESOLUTION on this topic — a decision, a realisation, or where "
+                "you each land on it. Stay on the same subject.")
+    return ("Respond to their last line, then go DEEPER on the same topic: offer "
+            "an opinion, raise the stakes, share a personal stake or memory, or "
+            "gently push back. Do NOT introduce an unrelated subject.")
+
+
+def _relationship_prose(familiarity: int, sentiment: int, partner: str) -> str:
+    """Render numeric relationship state as natural-language context.
+
+    Stanford Generative Agents (arXiv:2304.03442) conditions dialogue on a prose
+    "summary of relevant context from X's memory" about the other agent rather
+    than raw codes; models track tone far better from words than numbers.
+    """
+    who = partner or "them"
+    if familiarity >= 70:
+        fam = f"You know {who} well — you're close, with plenty of shared history"
+    elif familiarity >= 40:
+        fam = f"You know {who} fairly well by now"
+    elif familiarity >= 15:
+        fam = f"You've met {who} a few times; still getting to know them"
+    else:
+        fam = f"You barely know {who} — you've only just met"
+    if sentiment >= 40:
+        sent = "and you genuinely like and trust them"
+    elif sentiment >= 10:
+        sent = "and you feel warmly toward them"
+    elif sentiment <= -40:
+        sent = "and there's real friction — you don't much like them"
+    elif sentiment <= -10:
+        sent = "and you feel a bit wary or cool toward them"
+    else:
+        sent = "and you feel neutral about them"
+    return f"{fam}, {sent}."
+
+
+def _signature_voice(persona: Dict[str, Any]) -> str:
+    """A concrete speech habit derived from occupation/traits so voices differ
+    beyond MBTI (research recommendation: 1-2 specific voice levers)."""
+    occ = str(persona.get("occupation", "") or "").strip()
+    traits = [str(t).lower() for t in (persona.get("traits") or [])]
+    if any(t in traits for t in ("curious", "inquisitive", "analytical")):
+        return "you ask a lot of questions"
+    if any(t in traits for t in ("warm", "kind", "caring", "empathetic")):
+        return "you check in on how people are really doing"
+    if any(t in traits for t in ("witty", "playful", "sarcastic", "humorous")):
+        return "you lean on dry humour and teasing"
+    if any(t in traits for t in ("blunt", "direct", "pragmatic")):
+        return "you get straight to the point"
+    if occ:
+        return f"your talk often circles back to your work as a {occ.lower()}"
+    return "you tell small, specific stories from your day"
 
 
 def build_utterance_prompt(payload: Dict[str, Any]) -> Tuple[str, str]:
@@ -496,57 +573,81 @@ def build_utterance_prompt(payload: Dict[str, Any]) -> Tuple[str, str]:
     # Who am I speaking to, where am I in the exchange, and how do I sound?
     speaker_name = persona.get("name", "you")
     partner_name = ""
+    partner_fam = 0
+    partner_sent = 0
     for p in participants:
-        pname = p.get("name") if isinstance(p, dict) else str(p)
-        if pname and pname != speaker_name:
-            partner_name = pname
+        if isinstance(p, dict):
+            pname = p.get("name") or p.get("id")
+            if pname and pname != speaker_name:
+                partner_name = pname
+                partner_fam = int(p.get("familiarity", 0) or 0)
+                partner_sent = int(p.get("sentiment", 0) or 0)
+                break
+        elif str(p) and str(p) != speaker_name:
+            partner_name = str(p)
             break
     turn_index = len(utterances)
     total_turns = int(conv.get("maxTurns", 0) or 0)
     style_hint = _mbti_style_hint(persona)
+    signature = _signature_voice(persona)
     role = _turn_role_directive(turn_index, total_turns)
+    rel_prose = _relationship_prose(partner_fam, partner_sent, partner_name)
+    topic = str(conv.get("topic", "") or "").strip()
+
+    # The partner's most recent line: recency at the END of the user prompt is
+    # what makes the model anchor its reply (Stanford dialogue-prompt shape).
+    last_line = ""
+    for u in reversed(utterances):
+        if isinstance(u, dict):
+            spk = u.get("speaker") or u.get("agentId")
+            if spk and spk != payload.get("agentId"):
+                last_line = str(u.get("text", ""))
+                break
 
     system = (
         f"You are {speaker_name}, an inhabitant of a simulated Melbourne, in a "
         f"live face-to-face conversation"
         f"{f' with {partner_name}' if partner_name else ''}. "
+        f"{rel_prose} "
         "Speak ONLY as yourself, in first person. Reply with ONLY a JSON object "
-        'of the form:\n{"utterance":"<what you say next, at most 500 characters>"}\n'
+        "of the form:\n"
+        '{"utterance":"<what you say next, at most 500 characters>",'
+        '"wrapUp":<true if this conversation has run its course, else false>}\n'
         "HOW TO SPEAK:\n"
-        "- Ground your reply in the LAST thing the other person said: if they "
-        "asked a question, answer it first; if they made a statement, react to "
-        "it before adding anything new.\n"
-        "- Say ONE thing per turn (1-2 sentences). Prefer a concrete detail or "
-        "a real follow-up question over generic pleasantries.\n"
-        "- Do NOT repeat any greeting, question, or point already in the "
-        "transcript. Move the exchange forward.\n"
-        f"- Let your personality show: {style_hint}.\n"
+        "- React to the LAST thing they said FIRST: if they asked, answer it; "
+        "if they stated something, respond to it — THEN add one new thing.\n"
+        "- Say ONE thing per turn (1-2 sentences). Always a concrete detail, a "
+        "real opinion, or a genuine question — never empty filler.\n"
+        "- Stay on the CURRENT topic and go deeper each turn. Do not drift onto "
+        "unrelated small talk or restart the conversation.\n"
+        "- NEVER repeat a greeting, question, or point already in the transcript. "
+        "You are mid-conversation; do not greet again after the first line.\n"
+        "- Avoid canned filler: no 'Sounds good', 'How about you?', 'That's "
+        "great', 'Nice to meet you'. Say something only you would say.\n"
+        f"- Let your personality show: {style_hint}; {signature}.\n"
         f"WHERE YOU ARE IN THE CHAT: {role}"
     )
-    rel_lines = []
-    for p in participants:
-        if isinstance(p, dict):
-            rel_lines.append(
-                f"- {p.get('name', p.get('id'))}: "
-                f"familiarity={p.get('familiarity', 0)} sentiment={p.get('sentiment', 0)}"
-            )
-        else:
-            rel_lines.append(f"- {p}")
+
     conv_lines = []
     for u in utterances:
         if isinstance(u, dict):
             conv_lines.append(f"{u.get('speaker', u.get('agentId', '?'))}: {u.get('text', u)}")
         else:
             conv_lines.append(str(u))
+
     user = (
-        f"== YOUR PERSONA ==\n{_persona_block(persona)}\n\n"
-        f"== PARTICIPANTS & YOUR RELATIONSHIPS ==\n"
-        f"{chr(10).join(rel_lines) if rel_lines else '(none)'}\n\n"
-        f"== RELEVANT MEMORIES ==\n{_memory_block(ltm, 10)}\n\n"
+        f"== WHO YOU ARE ==\n{_persona_block(persona)}\n\n"
+        f"== WHAT YOU KNOW ABOUT {partner_name or 'THEM'} ==\n{rel_prose}\n\n"
+        f"== WHAT YOU REMEMBER (draw on this for shared history) ==\n"
+        f"{_memory_block(ltm, 10)}\n\n"
         f"== CONVERSATION SO FAR ==\n"
-        f"{chr(10).join(conv_lines) if conv_lines else '(you speak first)'}\n\n"
-        f"Return ONLY the JSON object with your next utterance (<=500 chars)."
+        f"{chr(10).join(conv_lines) if conv_lines else '(you speak first)'}\n"
     )
+    if topic:
+        user += f"\n== CURRENT THREAD ==\nYou two are talking about: {topic}. Stay on it and deepen it.\n"
+    if last_line and partner_name:
+        user += f'\n{partner_name} just said: "{last_line}"\nRespond to THAT, in your own voice.\n'
+    user += "\nReturn ONLY the JSON object with your next utterance (<=500 chars)."
     return system, user
 
 
@@ -685,14 +786,24 @@ def coerce_reflections(obj: Optional[Dict[str, Any]]) -> Optional[List[Dict[str,
     return out[:REFLECT_MAX]
 
 
-def coerce_utterance(obj: Optional[Dict[str, Any]], raw_text: str) -> str:
-    """Coerce into an utterance string <=500 chars."""
+def coerce_utterance(obj: Optional[Dict[str, Any]], raw_text: str) -> Tuple[str, bool]:
+    """Coerce into an (utterance <=500 chars, wrapUp flag).
+
+    ``wrapUp`` lets the speaker signal the conversation has run its course so the
+    engine can close it naturally (research: model-side natural-stop gate). It is
+    optional and defaults to False for back-compatibility.
+    """
     text = ""
-    if isinstance(obj, dict) and isinstance(obj.get("utterance"), str):
-        text = obj["utterance"]
+    wrap_up = False
+    if isinstance(obj, dict):
+        if isinstance(obj.get("utterance"), str):
+            text = obj["utterance"]
+        elif raw_text:
+            text = raw_text
+        wrap_up = bool(obj.get("wrapUp", False))
     elif raw_text:
         text = raw_text
-    return text.strip()[:UTTERANCE_MAX_CHARS]
+    return text.strip()[:UTTERANCE_MAX_CHARS], wrap_up
 
 
 # --------------------------------------------------------------------------- #
@@ -941,12 +1052,14 @@ def handle_utterance(payload: Dict[str, Any], bedrock=None, memory_client=None,
     system, user = build_utterance_prompt(enriched)
     text, in_tok, out_tok = call_bedrock(
         FAST_MODEL, system, user, MAX_TOKENS["utterance"],
-        client=bedrock, sleep=sleep, rng=rng)
+        client=bedrock, sleep=sleep, rng=rng,
+        temperature=UTTERANCE_TEMPERATURE)
     parsed = parse_json_object(text)
-    utterance = coerce_utterance(parsed, text)
+    utterance, wrap_up = coerce_utterance(parsed, text)
 
     resp: Dict[str, Any] = {
         "utterance": utterance,
+        "wrapUp": wrap_up,
         "tokenUsage": _token_usage(FAST_MODEL, "conversation", in_tok, out_tok),
     }
     if mem.degraded:
@@ -1182,11 +1295,36 @@ def _run_selftest() -> int:
     utt = uresp.get("utterance")
     check(isinstance(utt, str) and 0 < len(utt) <= UTTERANCE_MAX_CHARS,
           "utterance: bad string")
+    check("wrapUp" in uresp and isinstance(uresp["wrapUp"], bool),
+          "utterance: response must carry a boolean wrapUp flag")
     check(uresp["tokenUsage"]["modelId"] == FAST_MODEL,
           "utterance: must use fast model")
     check(uresp["tokenUsage"]["purpose"] == "conversation",
           "utterance: wrong purpose")
     check(FAST_MODEL in fake.calls, "utterance: fast model was not invoked")
+
+    # utterance prompt: grounds on partner's last line + relationship prose.
+    up_sys, up_usr = build_utterance_prompt({
+        "agentId": "agent_01",
+        "persona": up["persona"],
+        "conversation": {
+            "participants": [
+                {"id": "agent_01", "name": "Aroha Ngata"},
+                {"id": "agent_02", "name": "Bob", "familiarity": 20, "sentiment": 10},
+            ],
+            "utterancesSoFar": [
+                {"speaker": "agent_01", "text": "G'day Bob, how's the market treating you?"},
+                {"speaker": "agent_02", "text": "Busy as ever — barely stopped all morning."},
+            ],
+            "maxTurns": 8,
+            "topic": "the morning market rush",
+        },
+        "longTermMemory": [],
+    })
+    check("Bob just said" in up_usr, "utterance prompt must surface partner's last line")
+    check("morning market rush" in up_usr, "utterance prompt must carry the topic recap")
+    check("met" in up_sys.lower() or "know" in up_sys.lower(),
+          "utterance system prompt must render relationship as prose")
 
     # --- 4. Fallback: unparseable model output -> safe idle action. ---
     class BadBedrock:

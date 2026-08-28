@@ -1,5 +1,5 @@
 """Tests for the deterministic heuristic decision engine (village/heuristics.py)."""
-from village.heuristics import heuristic_decision, local_utterance
+from village.heuristics import heuristic_decision
 from village.models import (Action, AgentState, Config, EmploymentStatus, Job,
                             LegalStatus, Location, LocationCategory,
                             OpeningHours, Persona, Agent)
@@ -199,88 +199,3 @@ def test_attractor_pulls_agent_toward_positive_event():
     dests = [heuristic_decision(a, world, "2026-03-02T12:00:00+11:00") for a in agents]
     travels_to_park = [d for d in dests if d["type"] == "travel" and d["targetId"] == "loc_park"]
     assert travels_to_park, "expected at least one agent drawn to the attractor"
-
-
-def test_local_utterance_is_nonempty_and_bounded():
-    persona = Persona(name="Aroha", age=34, occupation="Barista", traits=["warm"],
-                      background="b", homeLocationId="loc_home")
-    line0 = local_utterance(persona, "the Park", 0, "2026-03-02T12:00:00+11:00",
-                            conv_id="c1", total_turns=4, partner_name="Bo")
-    line1 = local_utterance(persona, "the Park", 1, "2026-03-02T12:00:00+11:00",
-                            conv_id="c1", total_turns=4, partner_name="Bo")
-    assert isinstance(line0, str) and line0.strip()
-    assert isinstance(line1, str) and line1.strip()
-    assert len(line0) <= 500 and len(line1) <= 500
-
-
-def test_local_utterance_references_remembered_event():
-    persona = Persona(name="Aroha", age=34, occupation="Barista", traits=["warm"],
-                      background="b", homeLocationId="loc_home")
-    mem = ["12:00: heard about Explosion downtown at Cafe: a loud blast shook the block"]
-    # The opener (turn 0) pivots to a remembered injected event.
-    line = local_utterance(persona, "Cafe", 0, "2026-03-02T12:00:00+11:00",
-                           memory_lines=mem, conv_id="c-evt", total_turns=4,
-                           partner_name="Bo")
-    assert "Explosion" in line, \
-        "expected the opener to reference the remembered event"
-
-
-def test_local_utterance_opens_with_greeting_and_closes():
-    persona = Persona(name="Aroha", age=34, occupation="Barista", traits=["warm"],
-                      background="b", homeLocationId="loc_home")
-    first = local_utterance(persona, "the Park", 0, "2026-03-02T12:00:00+11:00",
-                            conv_id="c2", total_turns=4, partner_name="Bo Diaz")
-    last = local_utterance(persona, "the Park", 3, "2026-03-02T12:00:00+11:00",
-                           conv_id="c2", total_turns=4, partner_name="Bo Diaz")
-    # First turn greets the partner by first name.
-    assert "Bo" in first
-    # Final turn reads like a natural closing, not a fresh topic.
-    assert any(w in last.lower() for w in ("take care", "see you", "let you",
-                                           "catch up", "chatting"))
-
-
-def test_local_utterance_grounds_on_a_question():
-    persona = Persona(name="Aroha", age=34, occupation="Barista", traits=["warm"],
-                      background="b", homeLocationId="loc_home")
-    # A middle turn responding to a question should answer before developing.
-    reply = local_utterance(persona, "the Park", 1, "2026-03-02T12:00:00+11:00",
-                            conv_id="c3", total_turns=5, partner_name="Bo",
-                            partner_last_line="How's your day going?")
-    assert reply.strip()
-    # Responsive openers begin the reply (answer to a question).
-    assert reply[0].isupper()
-
-
-def test_local_utterance_no_verbatim_repetition_across_turns():
-    persona = Persona(name="Aroha", age=34, occupation="Barista", traits=["warm"],
-                      background="b", homeLocationId="loc_home", mbti="ESTJ")
-    lines = []
-    last = None
-    for t in range(6):
-        ln = local_utterance(persona, "the Park", t, "2026-03-02T12:00:00+11:00",
-                             conv_id="c4", total_turns=6, partner_name="Bo",
-                             partner_last_line=last)
-        lines.append(ln)
-        last = ln
-    # No two consecutive lines are byte-for-byte identical (the original bug).
-    for a, b in zip(lines, lines[1:]):
-        assert a != b, f"consecutive utterances repeated verbatim: {a!r}"
-
-
-def test_local_utterance_shares_one_topic_between_partners():
-    """Both speakers key their topic off the same conv_id, so the exchange
-    stays on ONE thread rather than two disconnected monologues."""
-    a = Persona(name="Aroha", age=34, occupation="Barista", traits=["warm"],
-                background="b", homeLocationId="loc_home", mbti="ENFP")
-    b = Persona(name="Bo", age=40, occupation="Vendor", traits=["calm"],
-                background="b", homeLocationId="loc_home", mbti="ENFP")
-    from village.heuristics import _conv_topic
-    # Topic is keyed purely on conv_id, so two partners with DIFFERENT MBTI
-    # still land on the same shared thread.
-    assert _conv_topic("shared-cid", "ENFP") == _conv_topic("shared-cid", "ISTJ")
-    # Determinism: same inputs -> same line.
-    l1 = local_utterance(a, "the Park", 1, "2026-03-02T12:00:00+11:00",
-                         conv_id="shared-cid", total_turns=4, partner_name="Bo")
-    l2 = local_utterance(a, "the Park", 1, "2026-03-02T12:00:00+11:00",
-                         conv_id="shared-cid", total_turns=4, partner_name="Bo")
-    assert l1 == l2

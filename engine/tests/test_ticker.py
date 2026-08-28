@@ -430,7 +430,8 @@ def _no_runtime_ticker(world, start="2026-03-02T12:00:00"):
     controller.start()
     budget = Budget_Accountant(world.config.budget)
     log = Event_Log()
-    # runtime=None => harness unavailable; heuristic + local utterances kick in.
+    # runtime=None => no LLM. Decisions fall back to the deterministic heuristic
+    # engine; conversations are NOT produced (utterances are LLM-only, no mock).
     ticker = Ticker(world=world, clock=clock, controller=controller,
                     runtime=None, event_log=log, budget=budget)
     return ticker, fake, log
@@ -454,25 +455,23 @@ def test_heuristic_decision_when_runtime_none_not_idle():
     assert actions[-1].detail["action"]["type"] in ("travel", "eat")
 
 
-def test_no_runtime_conversation_forms_with_local_utterances():
+def test_no_runtime_produces_no_conversation():
+    """Utterances are LLM-generated only. With runtime=None there is no LLM, so
+    no conversation transcript is produced even when agents hold socialise
+    actions toward each other (we never fabricate mock dialogue)."""
     world = _two_agent_socialising_world()  # both hold socialise->each other
     ticker, fake, log = _no_runtime_ticker(world, start="2026-03-02T12:00:00")
     fake.tick(1.0)
     ticker.advance_once()
 
     convos = log.query(category="conversation").entries
-    assert convos, "expected a conversation even without a runtime"
-    detail = convos[-1].detail
-    assert detail["kind"] == "conversation-ended"
-    assert set(detail["participants"]) == {"agent_01", "agent_02"}
-    assert len(detail["utterances"]) >= 2
-    # utterances are non-empty strings
-    assert all(u["text"].strip() for u in detail["utterances"])
+    assert not convos, "no runtime => no LLM => no conversation should be logged"
 
 
-def test_no_runtime_low_social_agents_eventually_converse():
-    """With runtime=None, idle low-social co-located agents should choose to
-    socialise via the heuristic and form a conversation within a few ticks."""
+def test_no_runtime_still_drives_decisions_but_no_conversation():
+    """With runtime=None, idle low-social co-located agents still choose to
+    socialise via the heuristic engine (decisions keep flowing), but because
+    utterances are LLM-only no conversation transcript is ever produced."""
     def mk(aid, name):
         st = AgentState(lat=-37.815, lon=144.955, presentLocationId="loc_park",
                         needs={"hunger": 70, "energy": 70, "social": 15, "fun": 70},
@@ -495,14 +494,16 @@ def test_no_runtime_low_social_agents_eventually_converse():
                        locations={"loc_park": park})
     ticker, fake, log = _no_runtime_ticker(world)
 
-    formed = False
     for _ in range(5):
         fake.tick(1.0)
         ticker.advance_once()
-        if log.query(category="conversation").entries:
-            formed = True
-            break
-    assert formed, "co-located low-social agents should converse via heuristics"
+
+    # Heuristic decisions still fire (agents act), but no conversation forms.
+    heuristic_actions = [e for e in log.query(category="action").entries
+                         if (e.detail or {}).get("kind") == "heuristic"]
+    assert heuristic_actions, "heuristic decisions should still drive behaviour"
+    assert not log.query(category="conversation").entries, \
+        "no runtime => no LLM => no conversation transcript"
 
 
 # ---------------------------------------------------------------------------
@@ -553,14 +554,51 @@ def test_injected_event_processed_only_once():
 
 
 def test_injected_event_memory_referenced_in_conversation():
+    """The engine feeds each speaker's remembered injected event into the
+    harness utterance payload, so an LLM can talk about it. We assert the
+    plumbing with a runtime whose utterance echoes the memory it was given."""
+    class _EventEchoRuntime:
+        """Utterance echoes any 'Explosion' memory surfaced in the payload,
+        proving the engine passes event-aware memory to the harness."""
+        def decision(self, request):
+            return {"action": {"type": "socialise", "targetType": "agent",
+                               "targetId": ("agent_02"
+                                            if request["agentId"] == "agent_01"
+                                            else "agent_01"),
+                               "expectedDurationMin": 10},
+                    "reasoning": "let's talk"}
+
+        def plan(self, request):
+            return {"plan": []}
+
+        def reflect(self, request):
+            return {"reflections": []}
+
+        def utterance(self, request):
+            mem = request.get("longTermMemory") or []
+            joined = " ".join(str(m) for m in mem)
+            if "Explosion" in joined:
+                return {"utterance": "Did you hear about the Explosion? Wild."}
+            return {"utterance": "Nice to see you."}
+
     world = _two_agent_socialising_world()
     world.injectedEvents["evt-1"] = _injected(
         "evt-1", simTime="2026-03-02T06:00:00+11:00",
         lat=-37.81, lon=144.95, locationId="loc_home",
         title="Explosion", description="a blast rattled the windows",
         scale="wide", severity="severe")
-    ticker, fake, log = _no_runtime_ticker(world, start="2026-03-02T06:00:00")
-    # A few ticks so awareness is recorded and conversations run.
+
+    fake = FakeClock()
+    clock = Simulation_Clock(
+        localize(datetime.fromisoformat("2026-03-02T06:00:00")),
+        acceleration_factor=60, real_clock=fake)
+    controller = Simulation_Controller(world.config)
+    controller.start()
+    budget = Budget_Accountant(world.config.budget)
+    log = Event_Log()
+    ticker = Ticker(world=world, clock=clock, controller=controller,
+                    runtime=_EventEchoRuntime(), event_log=log, budget=budget)
+
     saw_event_talk = False
     for _ in range(4):
         fake.tick(1.0)

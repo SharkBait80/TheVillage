@@ -504,6 +504,10 @@ export class VillageStack extends cdk.Stack {
         AGENT_RUNTIME_ARN: agentRuntimeArnParam.valueAsString,
         MEMORY_ID: memoryIdParam.valueAsString,
         LOOP_INTERVAL_SEC: '1',
+        // Conversations + agent reasoning are LLM-generated via the AgentCore
+        // Runtime harness. Enabled so the deployed world runs on the LLM (no
+        // local/mock utterances). Set to '0' only for a diagnostic no-LLM run.
+        HARNESS_ENABLED: '1',
       },
     });
 
