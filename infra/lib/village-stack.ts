@@ -40,7 +40,8 @@ export interface VillageStackProps extends cdk.StackProps {
  * (ApiLambdaRole, AssetLambdaRole, EngineTaskRole, plus the auto-generated
  * lambda execution roles) are each granted only the specific DynamoDB table +
  * index ARNs, S3 bucket ARN + prefix, and Bedrock model / AgentCore ARNs they
- * use. There are NO wildcard resource entries.
+ * use. There are NO wildcard resource entries — every Bedrock policy pins the
+ * exact inference-profile + foundation-model ARNs (HIGH-1 remediation).
  */
 export class VillageStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: VillageStackProps) {
@@ -69,6 +70,19 @@ export class VillageStack extends cdk.Stack {
     // some cross-region routes). Enumerated so foundation-model ARNs stay explicit.
     const INFERENCE_MEMBER_REGIONS = ['ap-southeast-2', 'ap-southeast-4', 'us-west-2', 'us-east-1'];
 
+    // Explicit Bedrock ARNs for the fast (Haiku) model used by BOTH Lambdas
+    // (the Asset Lambda for reseed biographies, the API Lambda for event
+    // moderation). Enumerated exactly like EngineTaskRole below — the specific
+    // au.anthropic Haiku inference-profile ARN plus the underlying Haiku
+    // foundation-model ARN in every inference member region. NO wildcards
+    // (Req 17.6): this is what makes the class-level "no wildcard resource
+    // entries" claim true for every principal.
+    const HAIKU_INFERENCE_PROFILE_ARN = `arn:aws:bedrock:${region}:${account}:inference-profile/${HAIKU_PROFILE}`;
+    const HAIKU_FM_ARNS = INFERENCE_MEMBER_REGIONS.map(
+      (r) => `arn:aws:bedrock:${r}::foundation-model/${HAIKU_FM}`
+    );
+    const HAIKU_MODEL_ARNS = [HAIKU_INFERENCE_PROFILE_ARN, ...HAIKU_FM_ARNS];
+
     // -------------------------------------------------------------------------
     // 1. DynamoDB single-table (DESIGN.md §3, Req 13 / 17.2)
     // -------------------------------------------------------------------------
@@ -78,6 +92,10 @@ export class VillageStack extends cdk.Stack {
       sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       pointInTimeRecovery: !isDev,
+      // MED-5: guard the stateful world-state store against accidental direct
+      // deletion (console/API) in test/prod. Left off in dev where the table is
+      // intentionally disposable (DESTROY + autoDelete).
+      deletionProtection: !isDev,
       removalPolicy: isDev ? cdk.RemovalPolicy.DESTROY : cdk.RemovalPolicy.RETAIN,
     });
 
@@ -133,13 +151,21 @@ export class VillageStack extends cdk.Stack {
       // a 302 to a presigned S3 URL. useAuthImage follows that redirect with
       // fetch(), so the browser performs a cross-origin GET against this bucket
       // and needs CORS headers to READ the response. Presigned URLs are already
-      // access-controlled by their signature, so allowing GET/HEAD from any
-      // origin is safe. Without this, portraits silently fall back to placeholders.
+      // access-controlled by their signature.
+      //
+      // MED-3: methods pinned to GET/HEAD and allowedHeaders narrowed from the
+      // previous ['*'] to the minimal set a simple image GET actually sends
+      // (defence-in-depth if a presigned URL ever leaks).
+      // TODO (HIGH-3/MED-3): scope allowedOrigins from '*' to the CloudFront
+      // distribution domain once a stable origin value is available. It cannot
+      // reference `distribution.distributionDomainName` here because the bucket
+      // is created before the distribution (ordering/circular dependency); a
+      // custom domain or a second-pass update is the clean fix.
       cors: [
         {
           allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.HEAD],
           allowedOrigins: ['*'],
-          allowedHeaders: ['*'],
+          allowedHeaders: ['Range', 'If-Modified-Since', 'If-None-Match'],
           exposedHeaders: ['ETag'],
           maxAge: 3000,
         },
@@ -223,19 +249,14 @@ export class VillageStack extends cdk.Stack {
       })
     );
     // Bedrock: in-region Claude (text) for generating unique agent biographies
-    // + personalities during a reseed. Scoped to Anthropic foundation models +
-    // the au. inference profile in this region/account (no wildcards on region).
+    // + personalities during a reseed. Scoped to the EXACT Haiku inference
+    // profile + underlying foundation-model ARNs across member regions
+    // (HIGH-1 fix — no wildcards).
     assetFn.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ['bedrock:InvokeModel'],
-        resources: [
-          `arn:aws:bedrock:${region}::foundation-model/anthropic.*`,
-          `arn:aws:bedrock:${region}:${account}:inference-profile/au.anthropic.*`,
-          ...INFERENCE_MEMBER_REGIONS.map(
-            (r) => `arn:aws:bedrock:${r}::foundation-model/${HAIKU_FM}`
-          ),
-        ],
+        resources: [...HAIKU_MODEL_ARNS],
       })
     );
 
@@ -280,16 +301,14 @@ export class VillageStack extends cdk.Stack {
     );
     // Bedrock: content moderation for operator-injected world events
     // (POST /v1/sim/{simId}/events). Uses the fast Claude model in this region
-    // (ap-southeast-2) via the Messages API. Scoped to Anthropic foundation
-    // models + the au. inference profile in this region/account.
+    // (ap-southeast-2) via the Messages API. Scoped to the EXACT Haiku
+    // inference profile + underlying foundation-model ARNs across member
+    // regions (HIGH-1 fix — no wildcards).
     apiFn.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ['bedrock:InvokeModel'],
-        resources: [
-          `arn:aws:bedrock:${region}::foundation-model/anthropic.*`,
-          `arn:aws:bedrock:${region}:${account}:inference-profile/au.anthropic.*`,
-        ],
+        resources: [...HAIKU_MODEL_ARNS],
       })
     );
 
@@ -308,6 +327,9 @@ export class VillageStack extends cdk.Stack {
         requireSymbols: true,
       },
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+      // MED-6: protect operator identities against accidental direct deletion
+      // in test/prod. Left inactive in dev where the pool is disposable.
+      deletionProtection: !isDev,
       removalPolicy: isDev ? cdk.RemovalPolicy.DESTROY : cdk.RemovalPolicy.RETAIN,
     });
 
@@ -325,6 +347,16 @@ export class VillageStack extends cdk.Stack {
 
     const httpApi = new apigwv2.HttpApi(this, 'SimulationHttpApi', {
       apiName: `village-api-${simulationId}-${environment}`,
+      // HIGH-3: ideally allowOrigins is the CloudFront distribution domain only.
+      // The distribution is created later in this stack and the SPA calls this
+      // API from that origin, so referencing distribution.distributionDomainName
+      // here would create a circular/ordering dependency (API -> stage -> ...,
+      // distribution -> spaBucket created after). To avoid breaking the SPA's
+      // ability to call the API, origin is kept as '*' for now.
+      // TODO (HIGH-3): scope allowOrigins to the CloudFront domain (or a custom
+      // domain) once a stable origin value is available, and pair with the WAF
+      // rate-based rule (HIGH-2, deferred). '*' + Authorization is a known gap
+      // documented in the README for the dev demo.
       corsPreflight: {
         allowOrigins: ['*'],
         allowMethods: [
@@ -336,8 +368,19 @@ export class VillageStack extends cdk.Stack {
       },
     });
 
-    const jwtAuthorizer = new apigwv2Authorizers.HttpUserPoolAuthorizer(
-      'OperatorJwtAuthorizer',
+    // HIGH-4: explicit throttling on the auto-created $default stage. Without
+    // this the API falls back to shared ACCOUNT-level limits (10k rps / 5k
+    // burst), so a runaway SPA poll loop or abusive client could exhaust the
+    // account budget and drive Lambda + Bedrock spend uncapped. The HttpApi
+    // props don't expose stage throttling directly, so we set it on the
+    // underlying CfnStage. Sized for a handful of operators polling `state`.
+    const defaultStage = httpApi.defaultStage!.node.defaultChild as apigwv2.CfnStage;
+    defaultStage.defaultRouteSettings = {
+      throttlingRateLimit: 50,
+      throttlingBurstLimit: 100,
+    };
+
+    const jwtAuthorizer = new apigwv2Authorizers.HttpUserPoolAuthorizer(      'OperatorJwtAuthorizer',
       userPool,
       {
         userPoolClients: [userPoolClient],
@@ -511,6 +554,23 @@ export class VillageStack extends cdk.Stack {
       },
     });
 
+    // MED-4: attach an EXPLICIT security group to the engine service instead of
+    // letting CDK create an implicit default one. It currently keeps
+    // allowAllOutbound (the task runs in a PUBLIC subnet and must reach AWS
+    // service endpoints — DynamoDB, Bedrock, AgentCore, ECR, Logs — directly
+    // over the internet, with no NAT/endpoints available in this region).
+    // TODO (CRIT-1 / MED-4 follow-up): once the task is moved to private
+    // subnets with VPC interface/gateway endpoints, set allowAllOutbound: false
+    // and restrict egress to 443 to the endpoint SG / AWS service prefix lists.
+    // No inbound rules are added (the engine serves no inbound traffic).
+    const engineSecurityGroup = new ec2.SecurityGroup(this, 'EngineSecurityGroup', {
+      vpc,
+      description:
+        'Simulation engine Fargate task SG. No inbound; egress open for AWS API ' +
+        'access from the public subnet (tighten to 443 when moved to private subnets).',
+      allowAllOutbound: true,
+    });
+
     const engineService = new ecs.FargateService(this, 'EngineService', {
       cluster,
       serviceName: `village-engine-${simulationId}-${environment}`,
@@ -518,6 +578,7 @@ export class VillageStack extends cdk.Stack {
       desiredCount: 1,
       assignPublicIp: true,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      securityGroups: [engineSecurityGroup],
       minHealthyPercent: 0,
       maxHealthyPercent: 100,
     });
@@ -534,13 +595,41 @@ export class VillageStack extends cdk.Stack {
       autoDeleteObjects: isDev,
     });
 
+    // MED-2: security response-headers policy applied at the edge (HSTS,
+    // nosniff, frame-deny, referrer-policy). Protects the operator SPA against
+    // downgrade/MITM, clickjacking, and MIME sniffing.
+    const spaSecurityHeaders = new cloudfront.ResponseHeadersPolicy(this, 'SpaSecurityHeaders', {
+      responseHeadersPolicyName: `village-spa-sec-headers-${simulationId}-${environment}`,
+      comment: 'Security headers for the Melbourne Agent Village SPA',
+      securityHeadersBehavior: {
+        strictTransportSecurity: {
+          accessControlMaxAge: cdk.Duration.days(365),
+          includeSubdomains: true,
+          preload: true,
+          override: true,
+        },
+        contentTypeOptions: { override: true },
+        frameOptions: {
+          frameOption: cloudfront.HeadersFrameOption.DENY,
+          override: true,
+        },
+        referrerPolicy: {
+          referrerPolicy: cloudfront.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN,
+          override: true,
+        },
+      },
+    });
+
     const distribution = new cloudfront.Distribution(this, 'SpaDistribution', {
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessControl(spaBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+        responseHeadersPolicy: spaSecurityHeaders,
       },
       defaultRootObject: 'index.html',
+      // LOW-4: pin the viewer minimum TLS version for audit clarity.
+      minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
       // SPA client-side routing: serve index.html for 403/404.
       errorResponses: [
         {
