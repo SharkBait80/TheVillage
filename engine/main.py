@@ -158,7 +158,11 @@ def refresh_injected_events(store: DynamoStore, world: WorldState,
     """
     added = 0
     try:
-        items = store.query_pk(sim_id)
+        # Scope the scan to INJECTED_EVENT# items only. Querying the whole
+        # partition here would paginate every EVENT# log item too (hundreds of
+        # thousands at steady state), taking minutes per loop iteration and
+        # stalling the tick loop / world clock.
+        items = store.query_pk(sim_id, sk_prefix="INJECTED_EVENT#")
     except Exception as e:  # noqa: BLE001
         print(f"[engine] injected-event refresh error: {e}", flush=True)
         return 0
