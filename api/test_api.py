@@ -228,7 +228,6 @@ def fake_lambda(monkeypatch):
 def _bucket_env(monkeypatch):
     monkeypatch.setattr(index, "ASSETS_BUCKET", "village-assets")
     monkeypatch.setattr(index, "ASSET_FN_NAME", "AssetGenFn")
-    monkeypatch.setattr(index, "ALLOW_ANON", False)
 
 
 # --------------------------------------------------------------------------- #
@@ -329,12 +328,15 @@ def test_empty_claims_object_rejected(fake_table):
     assert fake_table.calls == []
 
 
-def test_allow_anon_escape_hatch(monkeypatch, fake_table):
-    monkeypatch.setattr(index, "ALLOW_ANON", True)
-    seed_status(fake_table)
+def test_auth_cannot_be_bypassed_by_configuration(fake_table):
+    # The ALLOW_ANON auth bypass has been removed entirely: there is no module
+    # attribute or env var that can disable authentication. An unauthenticated
+    # request is always rejected with 401 and touches no World_State_Record.
+    assert not hasattr(index, "ALLOW_ANON")
     ev = make_event("GET", "/v1/sim/melb/state", authed=False)
     status, body = parse(index.handler(ev))
-    assert status == 200 and body["ok"] is True
+    assert status == 401 and body["ok"] is False
+    assert fake_table.calls == []
 
 
 def test_authed_request_allows_access(fake_table):
@@ -1132,6 +1134,96 @@ def test_create_event_requires_auth(fake_table, monkeypatch):
     ev = make_event("POST", "/v1/sim/melb/events", body=_valid_event_body(), authed=False)
     status, body = parse(index.handler(ev))
     assert status == 401 and fake_table.calls == []
+
+
+def test_create_event_invalid_simtime_400(fake_table, monkeypatch):
+    # A non-ISO-8601 simTime string must be rejected with 400 BEFORE moderation.
+    seed_status(fake_table)
+    fb = _patch_bedrock(monkeypatch,
+                        verdict={"plausible": True, "relevant": True,
+                                 "toxic": False, "reason": "ok"})
+    ev = make_event("POST", "/v1/sim/melb/events",
+                    body=_valid_event_body(simTime="not-a-timestamp"))
+    status, body = parse(index.handler(ev))
+    assert status == 400 and body["ok"] is False
+    assert "simtime" in body["error"].lower()
+    assert fb.calls == []
+    assert not any(sk.startswith("INJECTED_EVENT#") for (_, sk) in fake_table.items)
+
+
+def test_create_event_valid_simtime_accepted(fake_table, monkeypatch):
+    seed_status(fake_table)
+    _patch_bedrock(monkeypatch,
+                   verdict={"plausible": True, "relevant": True,
+                            "toxic": False, "reason": "ok"})
+    ev = make_event("POST", "/v1/sim/melb/events",
+                    body=_valid_event_body(simTime="2026-03-02T15:00:00+11:00"))
+    status, body = parse(index.handler(ev))
+    assert status == 201 and body["data"]["simTime"] == "2026-03-02T15:00:00+11:00"
+
+
+# --------------------------------------------------------------------------- #
+# REQUEST-SIZE GUARD (oversized body -> 413 before parse)
+# --------------------------------------------------------------------------- #
+
+def test_oversized_body_rejected_413(fake_table):
+    seed_status(fake_table)
+    # Build a raw body just over the cap without going through json.dumps limits.
+    huge = "x" * (index.MAX_BODY_BYTES + 1)
+    ev = make_event("POST", "/v1/sim/melb/config")
+    ev["body"] = json.dumps({"blob": huge})
+    status, body = parse(index.handler(ev))
+    assert status == 413 and body["ok"] is False
+    # Nothing persisted.
+    assert ("SIM#melb", "CONFIG") not in fake_table.items
+
+
+def test_oversized_base64_body_rejected_413(fake_table):
+    import base64
+    seed_status(fake_table)
+    payload = json.dumps({"blob": "y" * (index.MAX_BODY_BYTES + 10)}).encode("utf-8")
+    ev = make_event("POST", "/v1/sim/melb/config")
+    ev["body"] = base64.b64encode(payload).decode("ascii")
+    ev["isBase64Encoded"] = True
+    status, body = parse(index.handler(ev))
+    assert status == 413 and body["ok"] is False
+
+
+# --------------------------------------------------------------------------- #
+# SECURITY HEADERS
+# --------------------------------------------------------------------------- #
+
+def test_nosniff_header_present(fake_table):
+    seed_status(fake_table)
+    resp = index.handler(make_event("GET", "/v1/sim/melb/state"))
+    assert resp["headers"]["X-Content-Type-Options"] == "nosniff"
+
+
+# --------------------------------------------------------------------------- #
+# ERROR DISCLOSURE (generic 500, no exception detail leaked)
+# --------------------------------------------------------------------------- #
+
+def test_internal_error_is_generic_no_leak(fake_table, monkeypatch):
+    seed_status(fake_table)
+
+    # Force an unexpected failure deep in a handler.
+    def boom(*_a, **_k):
+        raise RuntimeError("secret arn:aws:dynamodb:...:table/village leaked")
+
+    monkeypatch.setattr(index, "_list_agents", boom)
+
+    class _Ctx:
+        aws_request_id = "req-abc-123"
+
+    resp = index.handler(make_event("GET", "/v1/sim/melb/state"), _Ctx())
+    status, body = parse(resp)
+    assert status == 500 and body["ok"] is False
+    # Generic message only; the raw exception text must NOT appear.
+    assert body["error"] == "internal error"
+    assert "arn:aws" not in json.dumps(body)
+    assert "secret" not in json.dumps(body)
+    # Correlation id surfaced for support without leaking internals.
+    assert body["requestId"] == "req-abc-123"
 
 
 if __name__ == "__main__":

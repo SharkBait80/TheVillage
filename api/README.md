@@ -38,8 +38,10 @@ write** and returns `401 {ok:false,error:...}` otherwise. Because API Gateway
 only forwards the request after the authorizer validates the token, the presence
 of claims is proof of a valid caller identity.
 
-- `ALLOW_ANON=1` — **local-testing escape hatch only**, default **off**. When
-  set, the auth gate is bypassed. Never set this in a deployed stack.
+Authentication **cannot be disabled by configuration** — there is no anonymous
+bypass. (Known gap: this gate is authentication only; it does not yet enforce
+object-level (`simId`) or function-level (viewer vs operator) authorization —
+see the `SECURITY TODO` block at the auth gate in `index.py`.)
 
 ## DynamoDB single-table (`village`) access (DESIGN §3)
 
@@ -60,7 +62,6 @@ of claims is proof of a valid caller identity.
 | `ASSETS_BUCKET` | S3 bucket for generated PNGs | *(required for asset serving)* |
 | `ASSET_FN_NAME` | Asset_Generator Lambda name (async invoke) | *(empty → trigger item)* |
 | `AWS_REGION` | provided by the Lambda runtime | `ap-southeast-2` |
-| `ALLOW_ANON` | `1` to bypass auth (local only) | off |
 
 ## Handler contract
 
