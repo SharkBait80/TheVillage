@@ -6,8 +6,10 @@
 // no `amazon-cognito-identity-js` dependency.
 //
 // The resulting IdToken is what the API Gateway Cognito JWT authorizer accepts
-// as `Authorization: Bearer <idToken>`. We keep it in memory + localStorage and
-// transparently re-authenticate when it is missing or about to expire.
+// as `Authorization: Bearer <idToken>`. We keep it IN MEMORY ONLY (never in
+// localStorage) so an XSS foothold cannot exfiltrate a persisted bearer token;
+// the token is lost on reload, which is acceptable because we transparently
+// re-authenticate when it is missing or about to expire.
 //
 // Config comes from Vite env:
 //   VITE_COGNITO_REGION     e.g. ap-southeast-2
@@ -20,7 +22,6 @@ const CLIENT_ID = import.meta.env.VITE_COGNITO_CLIENT_ID ?? ''
 const OPERATOR_USER = import.meta.env.VITE_OPERATOR_USER ?? ''
 const OPERATOR_PASS = import.meta.env.VITE_OPERATOR_PASS ?? ''
 
-const STORAGE_KEY = 'village.idToken'
 /** Re-auth when within this many ms of expiry. */
 const REFRESH_SKEW_MS = 5 * 60 * 1000
 
@@ -40,29 +41,23 @@ export class AuthError extends Error {
 }
 
 // In-memory copy of the current token (source of truth during a session).
-let idToken: string | null = readStoredToken()
+// Intentionally NOT persisted to localStorage: a persisted bearer token is a
+// prime XSS exfiltration target (see security review Finding 2). The token is
+// lost on reload; ensureAuth()/tryAutoLogin() re-authenticate transparently.
+let idToken: string | null = null
 // Guards against overlapping re-auth calls.
 let inFlight: Promise<string> | null = null
 // Last credentials used, so ensureAuth() can silently refresh.
+// TODO(security, Finding 7): switch to the Cognito refresh-token flow (the
+// RefreshToken returned by InitiateAuth) so we no longer retain the plaintext
+// password in module memory. Deferred: implementing REFRESH_TOKEN_AUTH here is
+// out of scope for the current in-memory-only token hardening.
 let lastUsername: string | null = null
 let lastPassword: string | null = null
 
-function readStoredToken(): string | null {
-  try {
-    return window.localStorage.getItem(STORAGE_KEY)
-  } catch {
-    return null
-  }
-}
-
 function storeToken(token: string | null): void {
+  // In-memory only — no localStorage. See the note on `idToken` above.
   idToken = token
-  try {
-    if (token) window.localStorage.setItem(STORAGE_KEY, token)
-    else window.localStorage.removeItem(STORAGE_KEY)
-  } catch {
-    // Ignore storage failures (e.g. private mode); memory copy still works.
-  }
 }
 
 /** Base64url-decode + parse a JWT's payload. Returns null when unparseable. */

@@ -20,30 +20,38 @@ interface LocationMarkerProps {
   onSelect: (locId: string) => void
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
+/** Build a DivIcon for a location.
+ *
+ * Constructed via DOM APIs (element properties, `textContent` for the label)
+ * rather than an interpolated HTML string, so name/category/src values cannot
+ * break out into markup or a JS handler context — structurally injection-proof.
+ */
 function buildIcon(location: LocationItem, imgSrc: string, placeholder: string): L.DivIcon {
   const alt = `${location.name} (${location.category})`
-  const html = `
-    <div class="loc-marker-inner">
-      <img
-        class="village-marker marker-loc"
-        width="44" height="44"
-        src="${imgSrc}"
-        alt="${escapeHtml(alt)}"
-        onerror="this.onerror=null;this.src='${placeholder}'"
-      />
-      <span class="marker-label">${escapeHtml(location.name)}</span>
-    </div>`
+
+  const inner = document.createElement('div')
+  inner.className = 'loc-marker-inner'
+
+  const img = document.createElement('img')
+  img.className = 'village-marker marker-loc'
+  img.width = 44
+  img.height = 44
+  img.src = imgSrc
+  img.alt = alt
+  img.onerror = () => {
+    img.onerror = null
+    img.src = placeholder
+  }
+
+  const label = document.createElement('span')
+  label.className = 'marker-label'
+  label.textContent = location.name
+
+  inner.appendChild(img)
+  inner.appendChild(label)
+
   return L.divIcon({
-    html,
+    html: inner,
     className: 'loc-marker-wrap',
     iconSize: [44, 60],
     iconAnchor: [22, 22],

@@ -16,6 +16,8 @@ const RETRY_MS = 5000
 const STALE_MS = 4000 // Req15.3 freshness ceiling
 const LOST_AFTER_FAILS = 3 // Req15.11
 const LOST_AFTER_MS = 10_000 // Req15.11
+const MIN_POLL_MS = 500 // floor: don't let a misconfigured env hammer the API
+const MAX_POLL_MS = 2000 // Req15.3: keep displayed state fresher than 2s
 
 export interface ConnectionState {
   /** Most recent successfully fetched state (retained on failure per R15.11). */
@@ -31,7 +33,10 @@ export interface ConnectionState {
 }
 
 const rawPoll = Number(import.meta.env.VITE_POLL_MS)
-const POLL_MS = Number.isFinite(rawPoll) && rawPoll > 0 ? Math.min(rawPoll, 2000) : DEFAULT_POLL_MS
+const POLL_MS =
+  Number.isFinite(rawPoll) && rawPoll > 0
+    ? Math.min(Math.max(rawPoll, MIN_POLL_MS), MAX_POLL_MS)
+    : DEFAULT_POLL_MS
 
 export function usePolling(): ConnectionState {
   const [conn, setConn] = useState<ConnectionState>({

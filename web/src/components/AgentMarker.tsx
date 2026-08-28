@@ -22,16 +22,13 @@ interface AgentMarkerProps {
   onSelect: (agentId: string) => void
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-/** Build a DivIcon whose <img> uses the resolved (authenticated) image src. */
+/** Build a DivIcon whose <img> uses the resolved (authenticated) image src.
+ *
+ * The <img> is constructed via DOM APIs (properties, not HTML string
+ * interpolation) so it is structurally injection-proof: even if `src`/`alt`
+ * ever carried attacker-influenced values, they are assigned as element
+ * properties and cannot break out into markup or a JS handler context.
+ */
 function buildIcon(agent: StateAgent, imgSrc: string, placeholder: string): L.DivIcon {
   const legalClass =
     agent.legal === 'suspected'
@@ -41,15 +38,23 @@ function buildIcon(agent: StateAgent, imgSrc: string, placeholder: string): L.Di
         : ''
   // Alt text (Req15.10 non-text content): agent name + legal status.
   const alt = `${agent.name}${agent.legal !== 'clear' ? ` (${agent.legal})` : ''}`
-  const html = `<img
-      class="village-marker marker-agent ${legalClass}"
-      width="40" height="40"
-      src="${imgSrc}"
-      alt="${escapeHtml(alt)}"
-      onerror="this.onerror=null;this.src='${placeholder}'"
-    />`
+
+  const img = document.createElement('img')
+  img.className = `village-marker marker-agent ${legalClass}`.trim()
+  img.width = 40
+  img.height = 40
+  img.src = imgSrc
+  img.alt = alt
+  // Fall back to the placeholder if the authenticated image fails to load.
+  // Handler assigned as a property (not an inline onerror attribute), so no
+  // JS-in-attribute escaping concerns.
+  img.onerror = () => {
+    img.onerror = null
+    img.src = placeholder
+  }
+
   return L.divIcon({
-    html,
+    html: img,
     className: 'agent-marker-wrap',
     iconSize: [40, 40],
     iconAnchor: [20, 20],

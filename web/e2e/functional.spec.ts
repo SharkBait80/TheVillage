@@ -216,7 +216,12 @@ test.describe('location detail panel', () => {
 
   test('present-agent list cross-navigates into the AgentPanel', async ({ page }) => {
     await gotoApp(page)
-    // Try each location marker until one lists a present agent, then click it.
+    // Agents wander continuously (seeded PRNG, but position depends on real poll
+    // timing), so whether any location currently has an agent within its 120m
+    // presence radius is not deterministic at a given instant — at load every
+    // agent is 180m+ from the nearest venue. We scan all markers for a present
+    // agent; if one is exposed we assert the cross-navigation, otherwise we
+    // explicitly SKIP (rather than silently passing without asserting).
     const markers = page.locator('.loc-marker-wrap')
     await expect(markers.first()).toBeVisible({ timeout: POLL_HEADROOM })
     const count = await markers.count()
@@ -234,14 +239,8 @@ test.describe('location detail panel', () => {
       await panel.getByRole('button', { name: 'Close location details' }).click()
       await expect(panel).toBeHidden()
     }
-    if (opened) {
-      await expect(page.getByRole('dialog', { name: 'Agent details' })).toBeVisible()
-    } else {
-      test.info().annotations.push({
-        type: 'note',
-        description: 'No location had a present agent this session; cross-nav not exercised.',
-      })
-    }
+    test.skip(!opened, 'No location currently has a present agent (agents are mid-wander).')
+    await expect(page.getByRole('dialog', { name: 'Agent details' })).toBeVisible()
   })
 })
 
@@ -292,22 +291,19 @@ test.describe('agent conversations section', () => {
 
   test('clicking another participant cross-navigates to that agent', async ({ page }) => {
     await gotoApp(page)
+    // agents[0] is the first list row and is a seeded conversation participant
+    // (paired with agents[4] on load), so its AgentPanel deterministically
+    // renders a cross-navigable participant link.
     const { panel } = await openFirstAgentPanel(page)
     await expect(panel.getByText('Conversations', { exact: true })).toBeVisible()
 
     const participantBtn = panel
       .locator('.agent-conversation-list .conversation-participants .link-btn')
       .first()
-    if (await participantBtn.count()) {
-      await participantBtn.click()
-      // Still an Agent details dialog (now for the other participant).
-      await expect(page.getByRole('dialog', { name: 'Agent details' })).toBeVisible()
-    } else {
-      test.info().annotations.push({
-        type: 'note',
-        description: 'No cross-navigable participant rendered this session.',
-      })
-    }
+    await expect(participantBtn).toBeVisible({ timeout: POLL_HEADROOM })
+    await participantBtn.click()
+    // Still an Agent details dialog (now for the other participant).
+    await expect(page.getByRole('dialog', { name: 'Agent details' })).toBeVisible()
   })
 })
 
