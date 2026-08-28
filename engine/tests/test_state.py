@@ -123,16 +123,32 @@ def test_decimal_conversion_round_trip():
 
 
 # -- DynamoStore retry with a fake table -----------------------------------
+class _TransientError(RuntimeError):
+    """Mimics a botocore ClientError for a throttling/transient DynamoDB fault
+    (carries the ``response.Error.Code`` structure the store inspects)."""
+    def __init__(self, code="ThrottlingException"):
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}}
+
+
+class _PermanentError(RuntimeError):
+    """Mimics a non-transient botocore ClientError (e.g. validation)."""
+    def __init__(self, code="ValidationException"):
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}}
+
+
 class FlakyTable:
-    def __init__(self, fail_times=0):
+    def __init__(self, fail_times=0, error=None):
         self.fail_times = fail_times
         self.calls = 0
         self.items = []
+        self._error = error or _TransientError()
 
     def put_item(self, Item=None, **kwargs):
         self.calls += 1
         if self.calls <= self.fail_times:
-            raise RuntimeError("throttled")
+            raise self._error
         self.items.append(Item)
 
 
@@ -151,3 +167,15 @@ def test_store_raises_after_all_retries():
     with pytest.raises(RuntimeError):
         store.put({"PK": "SIM#x", "SK": "AGENT#a"})
     assert table.calls == 4           # 1 + 3 retries
+
+
+def test_store_does_not_retry_non_transient_errors():
+    """Validation/conditional-check style failures re-raise immediately with no
+    blocking backoff (F7 remediation)."""
+    delays = []
+    table = FlakyTable(fail_times=99, error=_PermanentError())
+    store = DynamoStore(table=table, sleep=lambda d: delays.append(d))
+    with pytest.raises(RuntimeError):
+        store.put({"PK": "SIM#x", "SK": "AGENT#a"})
+    assert table.calls == 1           # no retries on a permanent error
+    assert delays == []               # never slept on the tick thread

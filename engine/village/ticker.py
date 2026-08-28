@@ -14,7 +14,7 @@ from __future__ import annotations
 import concurrent.futures
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
 from .budget import Budget_Accountant
 from .clock import DayRollover, Simulation_Clock, Tick
@@ -204,13 +204,18 @@ class Ticker:
 
         # 1. needs decay / recover
         for agent in self.world.agents.values():
-            act = agent.state.currentAction
-            sleeping = act is not None and act.type == ActionType.SLEEP
-            if sleeping:
-                apply_energy_recovery_tick(agent.state, self.world.config.energyRecoveryRate)
-            else:
-                apply_decay_tick(agent.state, self.world.config.decayRates)
-            update_critical_flags(agent.state)
+            # Per-agent isolation: a malformed agent must never abort the tick
+            # (and skip needs/persistence) for the rest of the world.
+            try:
+                act = agent.state.currentAction
+                sleeping = act is not None and act.type == ActionType.SLEEP
+                if sleeping:
+                    apply_energy_recovery_tick(agent.state, self.world.config.energyRecoveryRate)
+                else:
+                    apply_decay_tick(agent.state, self.world.config.decayRates)
+                update_critical_flags(agent.state)
+            except Exception as e:  # noqa: BLE001 — never abort a tick
+                print(f"[engine] needs-tick error agent={agent.id}: {e}", flush=True)
 
         # 2. movement progress + 3. end finished actions -> decision cycles
         for agent in self.world.agents.values():
@@ -274,13 +279,19 @@ class Ticker:
         for _ in day_rollovers:
             rolled = True
             for agent in self.world.agents.values():
-                paid, unpaid = self.economy.apply_daily_living_cost(agent.state)
-                if unpaid > 0:
-                    self.event_log.append(
-                        sim_iso, "employment",
-                        f"unpaid living cost {unpaid:.2f} for {agent.id}",
-                        agents=[agent.id],
-                        detail={"kind": "unpaid-living-cost", "unpaid": unpaid})
+                # Per-agent isolation: a bad living-cost calc must not abort the
+                # day-rollover for the rest of the world.
+                try:
+                    paid, unpaid = self.economy.apply_daily_living_cost(agent.state)
+                    if unpaid > 0:
+                        self.event_log.append(
+                            sim_iso, "employment",
+                            f"unpaid living cost {unpaid:.2f} for {agent.id}",
+                            agents=[agent.id],
+                            detail={"kind": "unpaid-living-cost", "unpaid": unpaid})
+                except Exception as e:  # noqa: BLE001 — never abort a tick
+                    print(f"[engine] day-rollover error agent={agent.id}: {e}",
+                          flush=True)
             # End-of-day reflection: durable "thoughts" drawn from the day's
             # short-term memory. Emitted as `memory` category events so the SPA
             # and decision-trail surface each agent's reasoning (Req 7 / 14).
@@ -296,17 +307,22 @@ class Ticker:
         # 5. law: release + suspect auto-clear
         if self.law is not None:
             for agent in self.world.agents.values():
-                home = self.world.locations.get(agent.persona.homeLocationId)
-                job_exists = agent.state.jobId in self.world.jobs if agent.state.jobId else False
-                if home is not None:
-                    rel = self.law.check_release(agent, tick.sim_time, home, job_exists)
-                    if rel is not None:
-                        for desc in rel.events:
+                # Per-agent isolation: a naive-datetime TypeError or missing
+                # home/job must not abort the law phase for everyone else.
+                try:
+                    home = self.world.locations.get(agent.persona.homeLocationId)
+                    job_exists = agent.state.jobId in self.world.jobs if agent.state.jobId else False
+                    if home is not None:
+                        rel = self.law.check_release(agent, tick.sim_time, home, job_exists)
+                        if rel is not None:
+                            for desc in rel.events:
+                                self.event_log.append(sim_iso, "legal", desc, agents=[agent.id])
+                    ac = self.law.check_suspect_autoclear(agent, tick.sim_time)
+                    if ac is not None:
+                        for desc in ac.events:
                             self.event_log.append(sim_iso, "legal", desc, agents=[agent.id])
-                ac = self.law.check_suspect_autoclear(agent, tick.sim_time)
-                if ac is not None:
-                    for desc in ac.events:
-                        self.event_log.append(sim_iso, "legal", desc, agents=[agent.id])
+                except Exception as e:  # noqa: BLE001 — never abort a tick
+                    print(f"[engine] law-tick error agent={agent.id}: {e}", flush=True)
 
         # 5b. run & resolve co-located conversations (Req 10). Utterance text
         # is produced by the harness; the full transcript is persisted so the
@@ -316,9 +332,14 @@ class Ticker:
         # 6. persist changed agents
         persisted = 0
         for agent in self.world.agents.values():
-            agent.persistedSimTime = sim_iso
-            self._persist(agent)
-            persisted += 1
+            # Per-agent isolation: a serialization/write failure for one agent
+            # must not skip persistence for the rest of the world.
+            try:
+                agent.persistedSimTime = sim_iso
+                self._persist(agent)
+                persisted += 1
+            except Exception as e:  # noqa: BLE001 — never abort a tick
+                print(f"[engine] persist error agent={agent.id}: {e}", flush=True)
 
         events_written = self.event_log.current_seq - events_before
 

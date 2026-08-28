@@ -17,6 +17,34 @@ from .models import (Agent, Config, CrimeEvent, EventLogEntry, Job, Location,
 WRITE_RETRIES = 3
 RETRY_BACKOFF = [1.0, 2.0, 4.0]   # Req 13.8
 
+# DynamoDB error codes that are transient/throttling and worth retrying with
+# backoff. Non-transient errors (ValidationException,
+# ConditionalCheckFailedException, serialization errors, …) are re-raised
+# immediately so we never waste up to 7s of blocking sleep on the tick thread
+# for a permanent failure (F7).
+TRANSIENT_ERROR_CODES = frozenset({
+    "ProvisionedThroughputExceededException",
+    "ThrottlingException",
+    "RequestLimitExceeded",
+    "InternalServerError",
+    "ServiceUnavailable",
+})
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    """True only for transient/throttling DynamoDB errors worth retrying.
+
+    Detects botocore ``ClientError`` by structure (``response.Error.Code``) so
+    the store needs no hard dependency on botocore being importable in tests.
+    Anything that is not a recognised transient AWS error code is treated as
+    non-transient and re-raised immediately.
+    """
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return False
+    code = response.get("Error", {}).get("Code")
+    return code in TRANSIENT_ERROR_CODES
+
 
 class SchemaVersionError(Exception):
     def __init__(self, record_id: str, version: int):
@@ -231,8 +259,11 @@ class DynamoStore:
             try:
                 self.table.put_item(Item=item)
                 return
-            except Exception:
-                if attempts >= WRITE_RETRIES:
+            except Exception as exc:
+                # Only transient/throttling errors are worth the blocking
+                # backoff on the tick thread; permanent errors (validation,
+                # conditional-check failures, …) re-raise immediately (F7).
+                if not _is_transient_error(exc) or attempts >= WRITE_RETRIES:
                     raise
                 self._sleep(RETRY_BACKOFF[attempts])
                 attempts += 1

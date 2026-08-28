@@ -9,6 +9,15 @@ Python 3.12+, standard library + `boto3` only. All non-deterministic inputs
 (real clock, RNG, Bedrock/AgentCore calls, DynamoDB) are injected so the domain
 logic is fully unit-testable.
 
+## Population / scale
+
+The **deployed** scale is **500 agents** — that is what `seed/config.json`
+(`population: 500`) and the infra sizing provision for. The code-level default
+(`models.Config.population` and `controller.POPULATION_DEFAULT`) is **25**, used
+only as a fallback when a config omits `population`. In short: default = 25,
+deployed = 500. Docs elsewhere that say "25" refer to the fallback default, not
+the running configuration.
+
 ## Layout
 
 ```

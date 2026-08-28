@@ -14,6 +14,9 @@ from .models import Config, SimStatus
 
 POPULATION_MIN = 5
 POPULATION_MAX = 2000
+# Fallback default when a config omits ``population``. NOTE: the DEPLOYED scale
+# is 500 (see seed/config.json and infra sizing, which provisions for 500
+# agents); this 25 is only the default for configs that don't specify a count.
 POPULATION_DEFAULT = 25
 
 

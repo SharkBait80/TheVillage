@@ -577,6 +577,9 @@ class Config:
         default_factory=lambda: {"hunger": 70, "energy": 70, "social": 70, "fun": 70}
     )
     budget: Budget = field(default_factory=Budget)
+    # Default population when none is supplied. The DEPLOYED scale is 500
+    # (see seed/config.json and infra sizing); this 25 is only the fallback
+    # default used when a config omits ``population``. Do not confuse the two.
     population: int = 25
     schemaVersion: int = SCHEMA_VERSION
 
