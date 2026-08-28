@@ -571,11 +571,27 @@ export class VillageStack extends cdk.Stack {
       allowAllOutbound: true,
     });
 
+    // Engine desired task count. The engine is a 24/7 Fargate task (4 vCPU /
+    // 8 GB ARM64) and is the dominant continuous cost of the stack; while it
+    // runs it also drives all Bedrock LLM + AgentCore invocations. Default to 0
+    // so a deploy does NOT silently start (or restart) a billing task. Start
+    // the world explicitly with `-c engineDesiredCount=1` (or by scaling the
+    // service up out-of-band). This keeps DynamoDB world state intact while the
+    // simulation is stopped and incurring no compute/inference cost.
+    const engineDesiredCountCtx = this.node.tryGetContext('engineDesiredCount');
+    const engineDesiredCount =
+      engineDesiredCountCtx === undefined ? 0 : Number(engineDesiredCountCtx);
+    if (!Number.isInteger(engineDesiredCount) || engineDesiredCount < 0) {
+      throw new Error(
+        `Invalid context 'engineDesiredCount' value '${engineDesiredCountCtx}'. Must be a non-negative integer.`
+      );
+    }
+
     const engineService = new ecs.FargateService(this, 'EngineService', {
       cluster,
       serviceName: `village-engine-${simulationId}-${environment}`,
       taskDefinition: engineTaskDef,
-      desiredCount: 1,
+      desiredCount: engineDesiredCount,
       assignPublicIp: true,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       securityGroups: [engineSecurityGroup],
