@@ -458,17 +458,70 @@ def build_reflect_prompt(payload: Dict[str, Any]) -> Tuple[str, str]:
     return system, user
 
 
+def _mbti_style_hint(persona: Dict[str, Any]) -> str:
+    """Translate an MBTI type into a concrete speech-style hint so personality
+    shows in *how* an agent talks (Stanford Generative Agents: models reason
+    better over natural-language descriptions than raw codes)."""
+    mbti = str(persona.get("mbti", "") or "").upper()
+    if len(mbti) < 4:
+        return "speak naturally in your own voice"
+    bits = []
+    bits.append("warm and encouraging" if mbti[2] == "F" else "candid and matter-of-fact")
+    bits.append("grounded in concrete details" if mbti[1] == "S"
+                else "drawn to ideas and possibilities")
+    bits.append("effusive and chatty" if mbti[0] == "E" else "measured and concise")
+    return ", ".join(bits)
+
+
+def _turn_role_directive(turn_index: int, total_turns: int) -> str:
+    """Where the speaker is in the exchange, so the model opens, develops, or
+    closes appropriately instead of re-greeting or trailing off."""
+    if turn_index <= 0:
+        return ("You speak FIRST. Greet them by name and raise ONE topic or ask "
+                "ONE genuine question. Do not answer questions that were not asked.")
+    if total_turns and turn_index >= total_turns - 1:
+        return ("The conversation is WRAPPING UP. Acknowledge the last thing "
+                "said and close warmly and naturally. Do NOT open a new topic.")
+    return ("Respond DIRECTLY to their last line, then move the conversation "
+            "forward with a specific detail or a follow-up question.")
+
+
 def build_utterance_prompt(payload: Dict[str, Any]) -> Tuple[str, str]:
     persona = payload.get("persona", {}) or {}
     conv = payload.get("conversation", {}) or {}
     ltm = payload.get("longTermMemory", []) or []
     participants = conv.get("participants", []) or []
     utterances = conv.get("utterancesSoFar", []) or []
+
+    # Who am I speaking to, where am I in the exchange, and how do I sound?
+    speaker_name = persona.get("name", "you")
+    partner_name = ""
+    for p in participants:
+        pname = p.get("name") if isinstance(p, dict) else str(p)
+        if pname and pname != speaker_name:
+            partner_name = pname
+            break
+    turn_index = len(utterances)
+    total_turns = int(conv.get("maxTurns", 0) or 0)
+    style_hint = _mbti_style_hint(persona)
+    role = _turn_role_directive(turn_index, total_turns)
+
     system = (
-        "You are an inhabitant of a simulated Melbourne speaking in a live conversation. "
-        "Reply with ONLY a JSON object of the form:\n"
-        '{"utterance":"<what you say next, at most 500 characters>"}\n'
-        "Speak in character, briefly and naturally, considering your relationships and memories."
+        f"You are {speaker_name}, an inhabitant of a simulated Melbourne, in a "
+        f"live face-to-face conversation"
+        f"{f' with {partner_name}' if partner_name else ''}. "
+        "Speak ONLY as yourself, in first person. Reply with ONLY a JSON object "
+        'of the form:\n{"utterance":"<what you say next, at most 500 characters>"}\n'
+        "HOW TO SPEAK:\n"
+        "- Ground your reply in the LAST thing the other person said: if they "
+        "asked a question, answer it first; if they made a statement, react to "
+        "it before adding anything new.\n"
+        "- Say ONE thing per turn (1-2 sentences). Prefer a concrete detail or "
+        "a real follow-up question over generic pleasantries.\n"
+        "- Do NOT repeat any greeting, question, or point already in the "
+        "transcript. Move the exchange forward.\n"
+        f"- Let your personality show: {style_hint}.\n"
+        f"WHERE YOU ARE IN THE CHAT: {role}"
     )
     rel_lines = []
     for p in participants:
