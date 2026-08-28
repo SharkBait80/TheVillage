@@ -125,6 +125,38 @@ the `SpaBucketName` bucket directly.
 
 ---
 
+## Starting / stopping the simulation (cost control)
+
+The simulation engine is a 24/7 ARM64 Fargate task (4 vCPU / 8 GB) and is the
+dominant continuous cost of the stack; while it runs it also drives all Bedrock
+LLM + AgentCore invocations. To avoid surprise bills the engine's desired task
+count defaults to **0** — a deploy never silently starts (or restarts) a
+billing task. DynamoDB is `PAY_PER_REQUEST`, so a stopped world only incurs
+tiny storage cost and all world state is preserved.
+
+Stop the engine now (no redeploy needed):
+
+```bash
+aws ecs update-service --cluster village-melb-dev \
+  --service village-engine-melb-dev --desired-count 0 --region ap-southeast-2
+```
+
+Start the engine when you want the world running again:
+
+```bash
+# out-of-band (fastest):
+aws ecs update-service --cluster village-melb-dev \
+  --service village-engine-melb-dev --desired-count 1 --region ap-southeast-2
+# or via deploy (persists the desired count in the template):
+npx cdk deploy VillageStack-dev -c engineDesiredCount=1 --require-approval never
+```
+
+Note: the operator `POST /v1/sim/{simId}/control` `stop` action pauses the sim
+loop but the Fargate task keeps running (and billing); to actually stop compute
+cost, scale the service to 0 as above.
+
+---
+
 ## Tests
 
 ```bash
