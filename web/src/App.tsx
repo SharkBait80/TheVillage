@@ -208,7 +208,14 @@ function VillageApp() {
         )}
 
         {selection?.kind === 'agent' && (
-          <AgentPanel agentId={selection.id} onClose={clearSelection} />
+          <AgentPanel
+            agentId={selection.id}
+            onClose={clearSelection}
+            onSelectAgent={handleSelectAgent}
+            agentNames={Object.fromEntries(
+              (conn.state?.agents ?? []).map((a) => [a.id, a.name]),
+            )}
+          />
         )}
         {selection?.kind === 'location' && (
           <LocationPanel

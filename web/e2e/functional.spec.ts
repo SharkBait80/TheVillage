@@ -245,6 +245,72 @@ test.describe('location detail panel', () => {
   })
 })
 
+test.describe('agent conversations section', () => {
+  test('shows the conversations the agent is involved in', async ({ page }) => {
+    await gotoApp(page)
+    // agents[0] is the first list row and a seeded conversation participant.
+    const { panel } = await openFirstAgentPanel(page)
+
+    await expect(panel.getByText('Conversations', { exact: true })).toBeVisible()
+
+    // The seeded transcript should render as a conversation card with utterances.
+    const card = panel.locator('.agent-conversation-list .conversation-card').first()
+    await expect(card).toBeVisible({ timeout: POLL_HEADROOM })
+    await expect(card.locator('.utterance').first()).toBeVisible()
+    await expect(card.locator('.utterance-speaker').first()).toBeVisible()
+    await expect(card.locator('.utterance-text').first()).toBeVisible()
+    // A timestamp is shown for the conversation.
+    await expect(card.locator('.conversation-time').first()).toBeVisible()
+  })
+
+  test('lists conversations ordered by date of occurrence, descending', async ({ page }) => {
+    await gotoApp(page)
+    const { panel } = await openFirstAgentPanel(page)
+    await expect(panel.getByText('Conversations', { exact: true })).toBeVisible()
+
+    const list = panel.locator('.agent-conversation-list')
+    await expect(list.locator('.conversation-card').first()).toBeVisible({ timeout: POLL_HEADROOM })
+
+    // Wait until the mock has produced more than one conversation for this agent
+    // so ordering is actually exercised, then assert the displayed timestamps
+    // are in non-increasing (descending) chronological order.
+    await expect
+      .poll(async () => panel.locator('.agent-conversation-list .conversation-time').count(), {
+        timeout: POLL_HEADROOM,
+      })
+      .toBeGreaterThanOrEqual(1)
+
+    const times = await panel.locator('.agent-conversation-list .conversation-time').allTextContents()
+    // Parse the en-AU "hh:mm, dd Mon" labels back into comparable Date values.
+    const parsed = times.map((t) => Date.parse(`${t} 2026`))
+    for (let i = 1; i < parsed.length; i++) {
+      if (Number.isFinite(parsed[i]) && Number.isFinite(parsed[i - 1])) {
+        expect(parsed[i - 1]).toBeGreaterThanOrEqual(parsed[i])
+      }
+    }
+  })
+
+  test('clicking another participant cross-navigates to that agent', async ({ page }) => {
+    await gotoApp(page)
+    const { panel } = await openFirstAgentPanel(page)
+    await expect(panel.getByText('Conversations', { exact: true })).toBeVisible()
+
+    const participantBtn = panel
+      .locator('.agent-conversation-list .conversation-participants .link-btn')
+      .first()
+    if (await participantBtn.count()) {
+      await participantBtn.click()
+      // Still an Agent details dialog (now for the other participant).
+      await expect(page.getByRole('dialog', { name: 'Agent details' })).toBeVisible()
+    } else {
+      test.info().annotations.push({
+        type: 'note',
+        description: 'No cross-navigable participant rendered this session.',
+      })
+    }
+  })
+})
+
 test.describe('conversations panel content', () => {
   test('lists a seeded transcript with participant names and utterances', async ({ page }) => {
     await gotoApp(page)

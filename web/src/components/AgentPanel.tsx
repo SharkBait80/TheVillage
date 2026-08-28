@@ -3,15 +3,36 @@
 // Fetches GET /v1/sim/{simId}/agents/{agentId} on selection and refreshes while
 // open so the panel stays live.
 
-import { useEffect, useRef, useState } from 'react'
-import { getAgent, getDecisionTrail } from '../api'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { getAgent, getConversations, getDecisionTrail } from '../api'
 import { agentPlaceholder } from '../placeholders'
 import { useAuthImage } from '../useAuthImage'
-import type { AgentDetail, DecisionTrail, NeedLevels } from '../types'
+import type { AgentDetail, ConversationItem, DecisionTrail, NeedLevels } from '../types'
 
 interface AgentPanelProps {
   agentId: string
   onClose: () => void
+  /**
+   * Optional agentId -> display name map so conversation participants render as
+   * names rather than ids. Falls back to the id when a name is unknown.
+   */
+  agentNames?: Record<string, string>
+  /** Cross-navigate to another agent (e.g. clicking a conversation participant). */
+  onSelectAgent?: (agentId: string) => void
+}
+
+/**
+ * Sort conversations by date of occurrence, most recent first (descending).
+ * `simTime` is an ISO string so lexical comparison is chronological; `seq` is a
+ * monotonic tiebreaker for conversations that share a sim-time.
+ */
+function sortByDateDesc(convos: ConversationItem[]): ConversationItem[] {
+  return [...convos].sort((a, b) => {
+    const ta = a.simTime ?? ''
+    const tb = b.simTime ?? ''
+    if (ta !== tb) return tb < ta ? -1 : 1
+    return (b.seq ?? 0) - (a.seq ?? 0)
+  })
 }
 
 const NEED_ORDER: (keyof NeedLevels)[] = ['hunger', 'energy', 'social', 'fun']
@@ -44,9 +65,11 @@ function actionText(detail: AgentDetail): string {
   return `${a.type}${target}${dur}`
 }
 
-export function AgentPanel({ agentId, onClose }: AgentPanelProps) {
+export function AgentPanel({ agentId, onClose, agentNames, onSelectAgent }: AgentPanelProps) {
   const [detail, setDetail] = useState<AgentDetail | null>(null)
   const [trail, setTrail] = useState<DecisionTrail | null>(null)
+  const [conversations, setConversations] = useState<ConversationItem[]>([])
+  const [conversationsLoaded, setConversationsLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
 
@@ -107,6 +130,45 @@ export function AgentPanel({ agentId, onClose }: AgentPanelProps) {
   }, [agentId, detail?.recentEvents])
 
   const portrait = useAuthImage(agentId, agentPlaceholder())
+
+  // Conversations this agent took part in (Req: agent detail shows the
+  // conversations they are involved in). The API filters by participant via
+  // ?agentId=; we additionally sort client-side to guarantee date-descending
+  // order regardless of backend/mock ordering. Refreshes while open so new
+  // conversations appear as the agent keeps talking.
+  useEffect(() => {
+    let active = true
+    const ac = new AbortController()
+    setConversations([])
+    setConversationsLoaded(false)
+    async function load() {
+      try {
+        const convos = await getConversations(agentId, ac.signal)
+        if (active) {
+          setConversations(sortByDateDesc(convos))
+          setConversationsLoaded(true)
+        }
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') return
+        if (active) setConversationsLoaded(true)
+      }
+    }
+    void load()
+    const timer = window.setInterval(load, 2000)
+    return () => {
+      active = false
+      ac.abort()
+      clearInterval(timer)
+    }
+  }, [agentId])
+
+  const nameOf = useMemo(() => {
+    return (id: string) => {
+      if (agentNames?.[id]) return agentNames[id]
+      if (detail && id === detail.id) return detail.persona.name
+      return id
+    }
+  }, [agentNames, detail])
 
   return (
     <aside
@@ -246,6 +308,48 @@ export function AgentPanel({ agentId, onClose }: AgentPanelProps) {
                 <li className="event-item" key={ev.seq}>
                   <div className="event-time">{formatEventTime(ev.simTime)}</div>
                   {ev.description}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="section-title">Conversations</div>
+          {!conversationsLoaded ? (
+            <p className="muted">Loading conversations…</p>
+          ) : conversations.length === 0 ? (
+            <p className="muted">
+              {detail.persona.name} hasn’t taken part in any conversations yet.
+            </p>
+          ) : (
+            <ul className="conversation-list agent-conversation-list">
+              {conversations.map((c) => (
+                <li className="conversation-card" key={c.id}>
+                  <div className="conversation-head">
+                    <span className="conversation-participants">
+                      {c.participants.map((id, i) => (
+                        <span key={id}>
+                          {i > 0 && <span aria-hidden="true"> · </span>}
+                          {onSelectAgent && id !== detail.id ? (
+                            <button className="link-btn" onClick={() => onSelectAgent(id)}>
+                              {nameOf(id)}
+                            </button>
+                          ) : (
+                            <span>{nameOf(id)}</span>
+                          )}
+                        </span>
+                      ))}
+                    </span>
+                    <span className="conversation-time">{formatEventTime(c.simTime)}</span>
+                  </div>
+                  <ol className="utterances">
+                    {c.utterances.map((u, i) => (
+                      <li className="utterance" key={i}>
+                        <span className="utterance-speaker">{nameOf(u.speaker)}:</span>{' '}
+                        <span className="utterance-text">{u.text}</span>
+                      </li>
+                    ))}
+                  </ol>
+                  {c.truncated && <p className="muted small">(conversation was cut short)</p>}
                 </li>
               ))}
             </ul>

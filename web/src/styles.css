@@ -787,6 +787,15 @@ h3,
   color: var(--accent-strong);
 }
 
+/* Agent-panel variant of the conversation list: a touch more compact so it
+   sits comfortably beneath the recent-events section in the detail panel. */
+.agent-conversation-list {
+  margin-top: 6px;
+}
+.agent-conversation-list .conversation-card {
+  padding: 10px;
+}
+
 /* ---- Add-event: armed map cursor + hint ---- */
 .map-arm-add,
 .map-arm-add .leaflet-container,
