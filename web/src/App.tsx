@@ -27,6 +27,7 @@ import { ListView } from './components/ListView'
 import { ConnectionBanner } from './components/ConnectionBanner'
 import { ConversationsPanel } from './components/ConversationsPanel'
 import { AddEventModal } from './components/AddEventModal'
+import { ChangePasswordModal } from './components/ChangePasswordModal'
 import { LoginScreen } from './components/LoginScreen'
 
 type Selection =
@@ -95,6 +96,9 @@ function VillageApp() {
   // coordinate and opens the modal (disarming the mode).
   const [addEventArmed, setAddEventArmed] = useState(false)
   const [addEventCoords, setAddEventCoords] = useState<{ lat: number; lon: number } | null>(null)
+  // Operator account: open the change-password dialog. Only meaningful in live
+  // mode (mock mode has no real Cognito session), so the button is hidden there.
+  const [showChangePassword, setShowChangePassword] = useState(false)
 
   const handleMapClick = useCallback((latlng: { lat: number; lon: number }) => {
     setAddEventCoords(latlng)
@@ -171,6 +175,14 @@ function VillageApp() {
         >
           Add event
         </button>
+        {!config.mock && (
+          <button
+            className="btn btn-toggle"
+            onClick={() => setShowChangePassword(true)}
+          >
+            Change password
+          </button>
+        )}
         {config.mock && (
           <span className="hud-chip" aria-label="Running in mock mode">
             <span className="hud-label">Mode</span>
@@ -243,6 +255,10 @@ function VillageApp() {
             lon={addEventCoords.lon}
             onClose={() => setAddEventCoords(null)}
           />
+        )}
+
+        {showChangePassword && (
+          <ChangePasswordModal onClose={() => setShowChangePassword(false)} />
         )}
       </main>
     </div>
