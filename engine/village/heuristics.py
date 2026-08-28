@@ -35,6 +35,10 @@ FUN_LOW = 40
 # Energy considered "high enough" that a night-owl need not sleep yet.
 ENERGY_HIGH = 60
 
+# Minimum turns the LLM-free conversation fallback plays out so an exchange has
+# a greeting, at least one responsive middle turn, and a natural close.
+MIN_LOCAL_TURNS = 4
+
 # Time-of-day boundaries (24h "HH:MM" string comparison is lexicographic-safe).
 NIGHT_START = "22:00"
 NIGHT_END = "06:00"
@@ -411,39 +415,106 @@ def _loc_of(world: Any, location_id: Optional[str]) -> Any:
 
 
 # -- local utterance fallback (no harness) ---------------------------------
-_GREETINGS = ("G'day", "Hi", "Hello", "Hey there", "Morning")
-_SMALL_TALK = (
-    "how's your day going?",
-    "busy around here today.",
-    "lovely spot, isn't it?",
-    "long time no see.",
-    "what brings you here?",
-)
+#
+# The LLM-free fallback must still read like a real, flowing conversation:
+# each turn responds to what the partner just said, the pair stays on ONE
+# topic, and lines progress greeting -> topic -> back-and-forth -> close
+# without ever repeating verbatim. We model this as a small adjacency-pair
+# dialogue state machine (see AIIDE "Talking with NPCs"; Frontiers in AI
+# frai.2025.1582287 on adjacency pairs + response obligation; Stanford
+# Generative Agents arXiv:2304.03442 on grounding each utterance on the
+# partner's last line). Determinism is preserved by keying every choice on a
+# stable conversation id + turn index rather than a per-process RNG.
 
-# Personality-flavoured small talk. Keyed by MBTI axis so the same agent sounds
-# consistent: intuitive/feeling types muse and connect; sensing/thinking types
-# stay concrete and practical.
-_SMALL_TALK_BY_AXIS = {
+_GREETINGS = ("G'day", "Hi", "Hello", "Hey there", "Morning")
+
+# One shared topic per conversation, chosen deterministically. Each topic
+# carries an opener (raised by the first speaker), a menu of on-topic
+# developments, and follow-up questions so the thread can actually progress.
+# Keyed by MBTI axis (S/N for concrete-vs-ideas, T/F for facts-vs-warmth) so an
+# agent's personality colours WHICH topic surfaces and HOW it is discussed.
+_TOPICS_BY_AXIS = {
     "N": (
-        "do you ever wonder what this city will be like in ten years?",
-        "I've been dreaming up a new project lately.",
-        "there's something magical about this place, isn't there?",
+        {"opener": "I've been dreaming up a new project lately.",
+         "develop": ("It could really change how people gather round here.",
+                     "Half the fun is imagining where it could go.",
+                     "I keep sketching out ideas for it at night."),
+         "ask": ("Ever get an idea you just can't shake?",
+                 "What would you build if nothing held you back?")},
+        {"opener": "Do you ever wonder what this city will look like in ten years?",
+         "develop": ("I picture the laneways greener, somehow livelier.",
+                     "Everything's changing so fast it's hard to keep up."),
+         "ask": ("Where do you reckon it's all heading?",)},
     ),
     "S": (
-        "the tram was right on time today, believe it or not.",
-        "good coffee here — I come for it every week.",
-        "did you catch the weather? Perfect for a walk.",
+        {"opener": "The coffee here's been spot on this week.",
+         "develop": ("I come by most mornings before the rush.",
+                     "They finally fixed the machine, you can taste it."),
+         "ask": ("Have you tried the new roast yet?",
+                 "What's your usual order?")},
+        {"opener": "The tram was right on time today, believe it or not.",
+         "develop": ("Made the whole morning run smoother.",
+                     "Rare enough that I noticed."),
+         "ask": ("How was your trip in?",)},
     ),
     "F": (
-        "it's so good to see a friendly face.",
-        "how are you really doing?",
-        "I always feel better after a chat with you.",
+        {"opener": "It's so good to run into a friendly face.",
+         "develop": ("These little catch-ups always lift my mood.",
+                     "I've been thinking about how you're getting on."),
+         "ask": ("How are you really doing, though?",
+                 "Is everything alright with you lately?")},
     ),
     "T": (
-        "I've been mulling over a tricky problem at work.",
-        "makes sense to plan the week out, don't you think?",
-        "interesting how the markets have been moving.",
+        {"opener": "I've been mulling over a tricky problem at work.",
+         "develop": ("There's a cleaner way to solve it, I'm sure of it.",
+                     "The numbers only add up if I rework the plan."),
+         "ask": ("Makes sense to plan the week out, don't you think?",
+                 "How would you approach something like that?")},
     ),
+}
+
+# Second-pair-part templates. When the partner just asked a question we ANSWER;
+# when they made a statement we ACKNOWLEDGE before adding our own thread.
+_ANSWERS = (
+    "Honestly, not bad at all — keeping busy.",
+    "Can't complain, plenty on but I'm managing.",
+    "Good question — I've been turning that over myself.",
+    "Better than last week, that's for sure.",
+)
+_ACKS = (
+    "Fair point.",
+    "I know exactly what you mean.",
+    "Ha, tell me about it.",
+    "Right? I was just thinking the same.",
+    "That's the truth.",
+)
+_CLOSINGS = (
+    "Anyway, I'd best get on — take care, {partner}.",
+    "Good to see you, {partner}. Let's catch up properly soon.",
+    "I'll let you get on with your day, {partner}.",
+    "Lovely chatting, {partner} — see you around.",
+)
+
+# Generic follow-up questions used to keep the exchange varied when a topic
+# offers only a single scripted question.
+_FOLLOW_UPS = (
+    "What do you make of it?",
+    "How's that sitting with you?",
+    "Anything else on your plate this week?",
+    "You been keeping well otherwise?",
+)
+
+# Short MBTI-flavoured connectors appended to middle turns so an agent's
+# personality colours HOW it speaks even while both partners share ONE topic.
+# Keyed on the T/F axis (warmth vs pragmatism) and E/I (effusive vs terse).
+_FLAVOUR_BY_AXIS = {
+    "F": ("Means a lot, honestly.", "So glad we crossed paths.",
+          "You always know what to say."),
+    "T": ("Practically speaking, anyway.", "Worth thinking through.",
+          "That's my read on it."),
+    "E": ("Love a good natter, me.", "We should do this more often.",
+          "Always good to swap notes."),
+    "I": ("Just my quiet take.", "Anyway.", "For what it's worth."),
 }
 
 
@@ -451,65 +522,137 @@ def _persona_field(persona: Any, field: str, default: str = "") -> str:
     return getattr(persona, field, default) or default
 
 
-def _small_talk_for(mbti: str, rng: random.Random) -> str:
-    """Pick a small-talk line coloured by the speaker's MBTI (falls back neutral)."""
-    pools: List[str] = list(_SMALL_TALK)
+def _axis_topics(mbti: str) -> List[Dict[str, Any]]:
+    """Topic pool coloured by the speaker's MBTI (S/N then T/F)."""
+    pools: List[Dict[str, Any]] = []
     if len(mbti) >= 3:
-        # Second letter S/N, third letter T/F.
-        pools = list(_SMALL_TALK_BY_AXIS.get(mbti[1], ()))
-        pools += list(_SMALL_TALK_BY_AXIS.get(mbti[2], ()))
+        pools += list(_TOPICS_BY_AXIS.get(mbti[1], ()))
+        pools += list(_TOPICS_BY_AXIS.get(mbti[2], ()))
     if not pools:
-        pools = list(_SMALL_TALK)
-    return rng.choice(pools)
+        # Neutral fallback for a missing/blank type.
+        for v in _TOPICS_BY_AXIS.values():
+            pools += list(v)
+    return pools
+
+
+def _all_topics() -> List[Dict[str, Any]]:
+    """Every topic, in a stable order — used to pick the ONE shared topic for a
+    conversation so both partners (whatever their MBTI) stay on one thread."""
+    pools: List[Dict[str, Any]] = []
+    for key in ("N", "S", "F", "T"):
+        pools += list(_TOPICS_BY_AXIS.get(key, ()))
+    return pools
+
+
+def _conv_seed(conv_id: str, extra: str = "") -> int:
+    """Stable integer derived from the conversation id (process-independent)."""
+    digest = hashlib.sha256(f"{conv_id}|{extra}".encode("utf-8")).hexdigest()
+    return int(digest[:16], 16)
+
+
+def _pick(pool, conv_id: str, salt: str, turn_index: int):
+    """Deterministic rotation over ``pool`` — never repeats back-to-back and
+    is stable across processes for a given (conv_id, salt, turn)."""
+    seq = list(pool)
+    if not seq:
+        return None
+    idx = (_conv_seed(conv_id, salt) + turn_index) % len(seq)
+    return seq[idx]
+
+
+def _conv_topic(conv_id: str, mbti: str = "") -> Dict[str, Any]:
+    """The single shared topic for this conversation.
+
+    Keyed purely on ``conv_id`` so BOTH participants derive the same topic
+    regardless of their (differing) MBTI types — the exchange stays on one
+    thread instead of splitting into two disconnected monologues.
+    """
+    pool = _all_topics()
+    return pool[_conv_seed(conv_id, "topic") % len(pool)]
 
 
 def local_utterance(speaker_persona: Any, location_name: str,
                     turn_index: int, sim_iso: str,
                     memory_lines: Optional[List[str]] = None,
-                    partner_name: Optional[str] = None) -> str:
-    """Deterministic, persona-flavoured small-talk line (no LLM needed).
+                    partner_name: Optional[str] = None,
+                    conv_id: Optional[str] = None,
+                    total_turns: int = 4,
+                    partner_last_line: Optional[str] = None) -> str:
+    """Deterministic, persona-flavoured conversational line (no LLM needed).
 
-    Keeps conversations flowing when the harness is unavailable. Agents address
-    each other by ``partner_name`` (never as "agent") and their MBTI type
-    colours how they speak. If the speaker has a recent memory referencing an
-    injected world event, the line refers to it so agents "talk about" the
-    explosion/festival/etc.
+    Produces a coherent back-and-forth by (a) grounding each reply on the
+    partner's previous line (answering questions, acknowledging statements),
+    (b) holding ONE shared topic for the whole conversation, and (c) walking a
+    greeting -> topic -> respond -> wind-down -> close state machine. Choices
+    are keyed on a stable ``conv_id`` so both speakers agree on the topic and
+    nothing repeats verbatim, while remaining fully deterministic.
+
+    Agents address each other by ``partner_name`` (never "agent"). If a recent
+    memory references an injected world event, the opener/topic can pivot to it
+    so agents "talk about" the explosion/festival/etc.
     """
     name = _persona_field(speaker_persona, "name", "Someone")
-    occupation = _persona_field(speaker_persona, "occupation", "local")
     mbti = _persona_field(speaker_persona, "mbti").upper()
-    # First name only feels natural in conversation.
     partner = (partner_name or "").strip().split(" ")[0] if partner_name else ""
-    seed = f"{name}|{sim_iso}|{turn_index}"
-    rng = _seeded_rng(seed, sim_iso)
+    # A stable id so both participants derive the same topic even without one
+    # supplied by the caller (older callers pass none).
+    cid = conv_id or f"{sim_iso}|{location_name}"
+    total = max(MIN_LOCAL_TURNS, total_turns)
 
-    # If a memory mentions an injected event, reference it sometimes — still
-    # addressing the partner by name where we have it.
-    event_line = _event_talk(memory_lines, rng, partner)
-    if event_line and rng.random() < 0.7:
-        return event_line[:500]
+    topic = _conv_topic(cid)
 
+    # An injected-event memory outranks small talk as the conversation topic.
+    event_line = _event_talk(memory_lines, _seeded_rng(cid, sim_iso), partner)
+
+    # Conversation-state machine keyed on the turn position.
+    #   0            greeting + raise the topic (or the remembered event)
+    #   last turn    natural closing
+    #   otherwise    respond to the partner, then develop / ask
     if turn_index == 0:
-        greeting = rng.choice(_GREETINGS)
+        greeting = _pick(_GREETINGS, cid, f"greet|{name}", turn_index)
         who = f" {partner}" if partner else ""
-        return f"{greeting}{who}! {_small_talk_for(mbti, rng)}"[:500]
-    talk = _small_talk_for(mbti, rng)
-    # Extraverts are more effusive and name the partner; introverts are terser.
-    if partner and (_is_extravert(mbti) or rng.random() < 0.5):
-        flavour = rng.choice((
-            f"Anyway {partner}, as a {occupation} I keep busy.",
-            f"Good to run into you at {location_name}, {partner}.",
-            f"Take care, {partner}.",
-            f"We should catch up more often, {partner}.",
-        ))
+        opener = event_line if (event_line and turn_index == 0) else topic["opener"]
+        return f"{greeting}{who}! {opener}"[:500]
+
+    if turn_index >= total - 1:
+        closing = _pick(_CLOSINGS, cid, f"close|{name}", turn_index)
+        return closing.format(partner=partner or "you")[:500]
+
+    # Middle turns: ground on what the partner just said, then move the
+    # conversation forward with an on-topic development or a follow-up question.
+    parts: List[str] = []
+    last = (partner_last_line or "").strip()
+    if last.endswith("?"):
+        parts.append(_pick(_ANSWERS, cid, f"ans|{name}", turn_index))
+    elif last:
+        parts.append(_pick(_ACKS, cid, f"ack|{name}", turn_index))
+
+    # Alternate between developing the topic and asking a follow-up so the
+    # thread breathes instead of stalling. Salt on the speaker + a rotating
+    # offset so a small topic pool doesn't surface the same line twice.
+    if turn_index % 2 == 1 and topic.get("ask"):
+        # A given speaker asks on turns 1,3,5…; dividing by two advances the
+        # rotation by one each time so a 2-item ask pool doesn't alternate back
+        # onto the same question.
+        follow = _pick(topic["ask"], cid, f"ask|{name}", turn_index // 2)
+        # If this topic offers only one question, vary later asks with a
+        # generic follow-up so the exchange never repeats verbatim.
+        if turn_index > 1 and len(topic["ask"]) < 2:
+            follow = _pick(_FOLLOW_UPS, cid, f"fup|{name}", turn_index // 2)
+        parts.append(follow)
     else:
-        flavour = rng.choice((
-            f"Anyway, as a {occupation}, I keep busy.",
-            f"Nice to run into you at {location_name}.",
-            "Take care of yourself.",
-            "We should catch up more often.",
-        ))
-    return f"{talk} {flavour}"[:500]
+        parts.append(_pick(topic["develop"], cid, f"dev|{name}", turn_index))
+        # Colour a development turn with an MBTI-flavoured aside so personality
+        # shows even on a shared topic (keyed T/F, then E/I).
+        flavour_pool = []
+        if len(mbti) >= 3:
+            flavour_pool += list(_FLAVOUR_BY_AXIS.get(mbti[2], ()))
+        if mbti:
+            flavour_pool += list(_FLAVOUR_BY_AXIS.get(mbti[0], ()))
+        if flavour_pool:
+            parts.append(_pick(flavour_pool, cid, f"flav|{name}", turn_index))
+
+    return " ".join(p for p in parts if p)[:500]
 
 
 def _event_talk(memory_lines: Optional[List[str]], rng: random.Random,
@@ -533,7 +676,8 @@ def _event_talk(memory_lines: Optional[List[str]], rng: random.Random,
     return None
 
 
-__all__ = ["heuristic_decision", "local_utterance", "in_world_reason"]
+__all__ = ["heuristic_decision", "local_utterance", "in_world_reason",
+           "MIN_LOCAL_TURNS"]
 
 
 # In-world, player-facing justification for a chosen action. This is what the

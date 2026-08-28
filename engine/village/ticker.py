@@ -24,7 +24,8 @@ from .economy import Economy_Engine
 from .eventlog import Event_Log
 from .events_inject import (Event_Propagation, Injected_Event,
                             add_sim_minutes, AVOID_TTL_MIN, ATTRACT_TTL_MIN)
-from .heuristics import heuristic_decision, local_utterance, in_world_reason
+from .heuristics import (heuristic_decision, local_utterance, in_world_reason,
+                         MIN_LOCAL_TURNS)
 from .law import Law_Enforcement_Engine
 from .crime import CrimeValidationError
 from .models import (Action, ActionType, Agent, Config, CrimeType,
@@ -1037,8 +1038,14 @@ class Ticker:
             for pid in convo.participants:
                 in_conversation.add(pid)
 
+            # Turn budget: give the local fallback enough turns for a greeting,
+            # a responsive middle, and a natural close; the harness path
+            # self-limits by returning None when it decides to stop.
+            max_u = MIN_LOCAL_TURNS if use_local else 10
+
             def utterance_provider(conversation, speaker_id, _self=self,
-                                   _sim=sim_iso, _local=use_local):
+                                   _sim=sim_iso, _local=use_local,
+                                   _max_turns=max_u):
                 # Local, LLM-free fallback: cheap deterministic small talk that
                 # can reference remembered injected events. Keeps conversations
                 # forming (>=2 utterances) when the harness is unavailable.
@@ -1060,9 +1067,18 @@ class Ticker:
                         if other is not None:
                             partner_name = other.persona.name
                             break
-                    return local_utterance(persona.persona, loc_name,
-                                           turn_index, _sim, memory_lines=mem,
-                                           partner_name=partner_name)
+                    # Ground this turn on the partner's previous line so the
+                    # fallback conversation flows as a real back-and-forth.
+                    partner_last_line = None
+                    for u in reversed(conversation.utterances):
+                        if u.speaker != speaker_id:
+                            partner_last_line = u.text
+                            break
+                    return local_utterance(
+                        persona.persona, loc_name, turn_index, _sim,
+                        memory_lines=mem, partner_name=partner_name,
+                        conv_id=conversation.id, total_turns=_max_turns,
+                        partner_last_line=partner_last_line)
                 payload = {
                     "op": "utterance",
                     "simId": _self.world.config.simId,
@@ -1072,6 +1088,7 @@ class Ticker:
                         "id": conversation.id,
                         "participants": conversation.participants,
                         "locationId": conversation.location_id,
+                        "maxTurns": _max_turns,
                         "utterancesSoFar": [
                             {"speaker": u.speaker, "text": u.text}
                             for u in conversation.utterances
@@ -1091,7 +1108,6 @@ class Ticker:
 
             # Ensure the local fallback produces at least MIN_UTTERANCES so the
             # conversation is persisted (the harness path self-limits via None).
-            max_u = 4 if use_local else 10
             try:
                 self.social.run_conversation(convo, utterance_provider,
                                              max_utterances=max_u)
