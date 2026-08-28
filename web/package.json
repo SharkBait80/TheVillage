@@ -8,8 +8,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "build:mock": "tsc -b && vite build --mode mock",
+    "build:auth-e2e": "tsc -b && vite build --mode auth-e2e",
     "preview": "vite preview",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:auth": "playwright test --config=playwright.auth.config.ts"
   },
   "dependencies": {
     "leaflet": "1.9.4",
