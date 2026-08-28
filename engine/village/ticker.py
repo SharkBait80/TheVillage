@@ -66,6 +66,11 @@ CONVO_MIN_TURNS = 4          # floor so an exchange has a real back-and-forth
 CONVO_MAX_TURNS_BASE = 8     # default ceiling for ordinary acquaintances
 CONVO_MAX_TURNS_CLOSE = 12   # ceiling for high-familiarity / warm pairs
 CONVO_MIN_TURNS_STRANGER = 3 # low floor when two near-strangers meet
+# Hard cap on how many conversations run per tick. Each conversation drives
+# several SYNCHRONOUS, SERIAL harness (LLM) calls, so an unbounded fan-out at a
+# busy location would block the tick loop and freeze the world clock at large
+# populations. Overflow pairs simply converse on a later tick.
+CONVO_MAX_PER_TICK = 4
 
 
 # --------------------------------------------------------------------------
@@ -1034,6 +1039,10 @@ class Ticker:
             colocated = [a for a in by_location.get(loc, []) if a.id != agent.id]
             if not colocated:
                 continue
+            # Bound synchronous LLM work per tick so the world clock never
+            # freezes at large populations (overflow converses next tick).
+            if started >= CONVO_MAX_PER_TICK:
+                break
             if not self.budget.can_start_decision():
                 break
 
